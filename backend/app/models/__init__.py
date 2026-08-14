@@ -63,6 +63,26 @@ from app.models.candidate import (  # noqa: F401
     Candidate,
     JobApplication,
 )
+from app.models.interview import (  # noqa: F401
+    INTERVIEW_FORMAT_OFFLINE,
+    INTERVIEW_FORMAT_ONLINE,
+    INTERVIEW_STATUS_CANCELLED,
+    INTERVIEW_STATUS_COMPLETED,
+    INTERVIEW_STATUS_CONFIRMED,
+    INTERVIEW_STATUS_DRAFT,
+    INTERVIEW_STATUS_ENDED_ABNORMALLY,
+    INTERVIEW_STATUS_IN_PROGRESS,
+    INTERVIEW_STATUS_PENDING_TRANSCRIPT,
+    INTERVIEW_STATUS_SCHEDULED,
+    MEETING_MODE_MANUAL,
+    SCHEDULE_STATUS_ACTIVE,
+    SCHEDULE_STATUS_CANCELLED,
+    SCHEDULE_STATUS_SUPERSEDED,
+    InterviewIdempotencyKey,
+    InterviewRound,
+    InterviewRoundInterviewer,
+    InterviewSchedule,
+)
 from app.models.job import (  # noqa: F401
     JOB_STATUS_CLOSED,
     JOB_STATUS_DRAFT,
@@ -150,6 +170,9 @@ SENSITIVE_AUDIT_KEYS = frozenset(
         "extracted_text",
         "resume_text",
         "jd_content",
+        "meeting_password",
+        "meeting_password_encrypted",
+        "contact_phone",
     }
 )
 

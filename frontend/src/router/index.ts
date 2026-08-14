@@ -12,6 +12,7 @@ import LoginView from '../views/LoginView.vue'
 import ResumeReviewView from '../views/ResumeReviewView.vue'
 import ResumesListView from '../views/ResumesListView.vue'
 import ScoreReportView from '../views/ScoreReportView.vue'
+import InterviewTimelineView from '../views/InterviewTimelineView.vue'
 import AiTasksView from '../views/AiTasksView.vue'
 
 const router = createRouter({
@@ -90,6 +91,15 @@ const router = createRouter({
       meta: { requiresAuth: true, permission: 'recruitment.manage' },
     },
     {
+      path: '/applications/:applicationId/interviews',
+      name: 'application-interviews',
+      component: InterviewTimelineView,
+      meta: {
+        requiresAuth: true,
+        anyPermission: ['recruitment.manage', 'interview.execute'],
+      },
+    },
+    {
       path: '/system/ai-tasks',
       name: 'admin-ai-tasks',
       component: AiTasksView,
@@ -123,6 +133,14 @@ router.beforeEach(async (to) => {
 
   const permission = to.meta.permission as string | undefined
   if (permission && !authStore.hasPermission(permission)) {
+    return { name: 'forbidden' }
+  }
+
+  const anyPermission = to.meta.anyPermission as string[] | undefined
+  if (
+    anyPermission?.length &&
+    !anyPermission.some((code) => authStore.hasPermission(code))
+  ) {
     return { name: 'forbidden' }
   }
 

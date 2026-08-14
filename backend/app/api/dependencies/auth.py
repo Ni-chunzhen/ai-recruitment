@@ -100,3 +100,19 @@ def require_permission(permission_code: str):
         return user
 
     return dependency
+
+
+def require_any_permission(*permission_codes: str):
+    async def dependency(
+        request: Request,
+        user: User = Depends(get_current_user),
+    ) -> User:
+        for code in permission_codes:
+            if await user_has_permission(user, code):
+                return user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="forbidden",
+        )
+
+    return dependency

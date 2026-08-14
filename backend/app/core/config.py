@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     MINIO_SECURE: bool = False
     MINIO_PRESIGN_SECONDS: int = 600
 
+    data_encryption_key_secret: SecretStr = Field(
+        validation_alias="DATA_ENCRYPTION_KEY",
+        default=SecretStr(""),
+    )
+
     RESUME_UPLOAD_MAX_FILES: int = 5
     RESUME_UPLOAD_MAX_BYTES: int = 10 * 1024 * 1024
 
@@ -133,6 +138,10 @@ class Settings(BaseSettings):
     @property
     def minio_secret_key(self) -> str:
         return self.minio_secret_key_secret.get_secret_value()
+
+    @property
+    def data_encryption_key(self) -> str:
+        return self.data_encryption_key_secret.get_secret_value()
 
     @property
     def cors_origins(self) -> list[str]:

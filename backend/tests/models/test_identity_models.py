@@ -15,6 +15,15 @@ def test_sanitize_audit_changes_rejects_password_keys() -> None:
     with pytest.raises(ValueError, match="sensitive key"):
         sanitize_audit_changes({"nested": {"refresh_token": "abc"}})
 
+    with pytest.raises(ValueError, match="sensitive key"):
+        sanitize_audit_changes({"meeting_password": "meet-secret"})
+
+    with pytest.raises(ValueError, match="sensitive key"):
+        sanitize_audit_changes({"meeting_password_encrypted": "enc:v1:xx"})
+
+    with pytest.raises(ValueError, match="sensitive key"):
+        sanitize_audit_changes({"contact_phone": "13800138000"})
+
 
 def test_sanitize_audit_changes_allows_safe_keys() -> None:
     result = sanitize_audit_changes({"role": "system_admin", "is_active": True})

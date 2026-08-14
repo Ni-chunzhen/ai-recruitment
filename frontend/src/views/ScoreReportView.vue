@@ -378,6 +378,12 @@ onBeforeUnmount(() => {
             人工重试
           </el-button>
           <el-button
+            v-if="isInterviewing"
+            @click="router.push({ name: 'application-interviews', params: { applicationId: applicationId } })"
+          >
+            面试安排
+          </el-button>
+          <el-button
             type="primary"
             :loading="scoring"
             :disabled="taskPending || taskRunning"
