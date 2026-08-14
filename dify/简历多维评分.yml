@@ -1,0 +1,207 @@
+app:
+  description: 阶段5·简历多维评分。输入岗位JD、能力维度(name/description/weight)、已确认简历文本，输出各维度0~100分与辅助建议。不使用面试评分锚点；加权总分由后端按岗位权重复算。
+  icon: 📊
+  icon_background: '#FFF4E8'
+  icon_type: emoji
+  mode: workflow
+  name: 简历多维评分
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/deepseek:0.0.19@1aa3c64e2f50179afe8410ad79412dab92bf5919a27da8e2b13071b5e5f8ce81
+    version: null
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 50
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        knowledge_file_size_limit: 15
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: llm
+      id: e1
+      source: '1786600001001'
+      sourceHandle: source
+      target: '1786600001002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: end
+      id: e2
+      source: '1786600001002'
+      sourceHandle: source
+      target: '1786600001004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: ''
+        selected: false
+        title: 开始
+        type: start
+        variables:
+        - default: ''
+          hint: 应聘绑定的已发布岗位版本 JD 正文
+          label: 岗位JD
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: jd_content
+        - default: ''
+          hint: JSON数组，每项仅含 name/description/weight。与岗位能力维度生成结果一致，但不含 score_anchors
+          label: 能力维度JSON
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: dimensions_json
+        - default: ''
+          hint: 人工确认后的简历标准化文本
+          label: 简历文本
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: resume_text
+        - default: ''
+          label: 候选人编号
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: candidate_id
+        - default: ''
+          label: 岗位名称
+          options: []
+          placeholder: ''
+          required: true
+          type: text-input
+          variable: job_title
+      height: 220
+      id: '1786600001001'
+      position:
+        x: 40
+        y: 240
+      positionAbsolute:
+        x: 40
+        y: 240
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: ''
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: deepseek-v4-flash
+          provider: langgenius/deepseek/deepseek
+        prompt_template:
+        - id: p1
+          role: system
+          text: "你是资深招聘评估专家。请基于岗位JD与给定能力维度，对候选人简历打分。\n\n# 硬性规则\n1. dimensions 中的 name 必须与输入 dimensions_json 完全一致，禁止新增或改名\n2. 每个维度 score 为 0~100 的数值\n3. 只依据简历可验证信息；信息不足时降低分数，并在 gap 说明「信息不足」，同时将 information_insufficient=true；不得把信息缺失直接等同于能力不足\n4. 不要使用、不要输出、不要参考任何 1~5 分面试评分锚点\n5. weight 原样回传输入维度权重即可（最终加权总分由后端复算）\n6. recommendation / score_band 仅作辅助建议，不代表最终录用决定\n7. 只输出合法 JSON，不要 markdown 代码块，不要解释文字\n\n输出 schema：\n{\n  \"dimensions\": [{\n    \"name\": \"与输入一致的维度名\",\n    \"description\": \"可回传输入描述\",\n    \"weight\": 20,\n    \"score\": 75,\n    \"evidence\": \"简历依据\",\n    \"gap\": \"差距或信息不足说明\",\n    \"risk\": \"风险（可空）\"\n  }],\n  \"recommendation\": \"建议面试|待定|谨慎|不建议\",\n  \"score_band\": \"A|B|C|D\",\n  \"must_have_check\": [\"必备项核验说明\"],\n  \"risks\": [\"风险点\"],\n  \"summary\": \"一句话总结\",\n  \"information_insufficient\": false\n}"
+        - id: p2
+          role: user
+          text: "岗位名称：{{#1786600001001.job_title#}}\n候选人编号：{{#1786600001001.candidate_id#}}\n\n能力维度(JSON)：\n{{#1786600001001.dimensions_json#}}\n\n岗位JD：\n{{#1786600001001.jd_content#}}\n\n已确认简历：\n{{#1786600001001.resume_text#}}\n\n请按 system 中的 schema 输出 JSON。"
+        selected: false
+        structured_output_enabled: false
+        title: LLM评分
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '1786600001002'
+      position:
+        x: 360
+        y: 240
+      positionAbsolute:
+        x: 360
+        y: 240
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        desc: ''
+        outputs:
+        - value_selector:
+          - '1786600001002'
+          - text
+          value_type: string
+          variable: result
+        selected: false
+        title: 结束
+        type: end
+      height: 90
+      id: '1786600001004'
+      position:
+        x: 680
+        y: 240
+      positionAbsolute:
+        x: 680
+        y: 240
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    viewport:
+      x: 60
+      y: 60
+      zoom: 0.7
+  rag_pipeline_variables: []

@@ -1,0 +1,298 @@
+app:
+  description: 阶段5·简历解析。接收系统提取的 resume_text，输出结构化简历 JSON，供 HR 校对确认后进入多维评分。不得虚构联系方式与经历。
+  icon: 📄
+  icon_background: '#E8F3FF'
+  icon_type: emoji
+  mode: workflow
+  name: 简历解析
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/deepseek:0.0.19@1aa3c64e2f50179afe8410ad79412dab92bf5919a27da8e2b13071b5e5f8ce81
+    version: null
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 50
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        knowledge_file_size_limit: 15
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: llm
+      id: e1
+      source: '1786500001001'
+      sourceHandle: source
+      target: '1786500001002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: e2
+      source: '1786500001002'
+      sourceHandle: source
+      target: '1786500001003'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: e3
+      source: '1786500001003'
+      sourceHandle: source
+      target: '1786500001004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        selected: false
+        title: 用户输入
+        type: start
+        variables:
+        - default: ''
+          hint: 系统提取的简历纯文本（必填）
+          label: 简历文本
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: resume_text
+        - default: ''
+          hint: 候选人业务编号，可为空
+          label: 候选人编号
+          options: []
+          placeholder: ''
+          required: false
+          type: text-input
+          variable: candidate_id
+      height: 140
+      id: '1786500001001'
+      position:
+        x: 40
+        y: 280
+      positionAbsolute:
+        x: 40
+        y: 280
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        context:
+          enabled: true
+          variable_selector:
+          - '1786500001001'
+          - resume_text
+        model:
+          completion_params:
+            temperature: 0.1
+          mode: chat
+          name: deepseek-v4-flash
+          provider: langgenius/deepseek/deepseek
+        prompt_template:
+        - id: p1
+          role: system
+          text: "你是招聘简历解析助手。只根据给定简历原文提取事实，禁止臆造。\n\n# 规则\n1. 姓名无法确认时输出空字符串（系统会标记待补充），不得编造\n2. 手机号/邮箱仅在原文明确出现时填写\n3. 工作经历、项目经历缺失时返回空数组，不要编造\n\
+            4. skills 仅提取原文明确技能关键词\n5. standardized_text 必须输出清洗后的完整简历正文，不能为空\n6. 只输出合法 JSON，不要 markdown\n\n输出 schema：\n{\n\
+            \  \"name\": \"\",\n  \"phone\": \"\",\n  \"email\": \"\",\n  \"years_of_experience\": null,\n  \"education\"\
+            : [{\"school\":\"\",\"degree\":\"\",\"major\":\"\",\"start\":\"\",\"end\":\"\",\"missing\":false}],\n  \"work_experience\"\
+            : [{\"company\":\"\",\"title\":\"\",\"start\":\"\",\"end\":\"\",\"description\":\"\",\"missing\":false,\"source\"\
+            :\"ai\"}],\n  \"projects\": [{\"name\":\"\",\"role\":\"\",\"start\":\"\",\"end\":\"\",\"description\":\"\",\"\
+            missing\":false,\"source\":\"ai\"}],\n  \"skills\": [\"Vue\"],\n  \"standardized_text\": \"\"\n}\n\n# 候选人编号\n\
+            {{#1786500001001.candidate_id#}}\n\n# 简历原文\n{{#1786500001001.resume_text#}}"
+        selected: true
+        structured_output:
+          schema:
+            $schema: http://json-schema.org/draft-07/schema#
+            additionalProperties: false
+            type: object
+            required:
+            - standardized_text
+            properties:
+              name:
+                type: string
+              phone:
+                type: string
+              email:
+                type: string
+              years_of_experience:
+                type:
+                - number
+                - 'null'
+              education:
+                type: array
+                items:
+                  type: object
+              work_experience:
+                type: array
+                items:
+                  type: object
+              projects:
+                type: array
+                items:
+                  type: object
+              skills:
+                type: array
+                items:
+                  type: string
+              standardized_text:
+                type: string
+        structured_output_enabled: true
+        title: LLM·简历结构化
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '1786500001002'
+      position:
+        x: 360
+        y: 280
+      positionAbsolute:
+        x: 360
+        y: 280
+      selected: true
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\nimport re\n\n\ndef _parse(raw):\n    if isinstance(raw, dict):\n        return raw\n    if raw\
+          \ is None:\n        return {}\n    text = str(raw).strip()\n    if not text:\n        return {}\n    m = re.search(r\"\
+          ```(?:json)?\\s*([\\s\\S]*?)```\", text, re.I)\n    if m:\n        text = m.group(1).strip()\n    try:\n       \
+          \ return json.loads(text)\n    except Exception:\n        s, e = text.find(\"{\"), text.rfind(\"}\")\n        if\
+          \ s >= 0 and e > s:\n            try:\n                return json.loads(text[s : e + 1])\n            except Exception:\n\
+          \                return {}\n        return {}\n\n\ndef _as_list(value):\n    if value is None:\n        return []\n\
+          \    if isinstance(value, list):\n        return value\n    return []\n\n\ndef _as_str(value):\n    return str(value\
+          \ or \"\").strip()\n\n\ndef main(structured_out, llm_text: str, resume_text: str, candidate_id: str) -> dict:\n\
+          \    try:\n        payload = structured_out if isinstance(structured_out, dict) and structured_out else _parse(llm_text)\n\
+          \        if not isinstance(payload, dict):\n            payload = {}\n\n        name = _as_str(payload.get(\"name\"\
+          ))\n        standardized = _as_str(payload.get(\"standardized_text\")) or _as_str(resume_text)\n        if not standardized:\n\
+          \            err = {\"error\": \"standardized_text_empty\"}\n            return {\"result\": json.dumps(err, ensure_ascii=False)}\n\
+          \n        result = {\n            \"name\": name,\n            \"phone\": _as_str(payload.get(\"phone\")),\n   \
+          \         \"email\": _as_str(payload.get(\"email\")),\n            \"years_of_experience\": payload.get(\"years_of_experience\"\
+          ),\n            \"education\": _as_list(payload.get(\"education\")),\n            \"work_experience\": _as_list(payload.get(\"\
+          work_experience\") or payload.get(\"experiences\")),\n            \"projects\": _as_list(payload.get(\"projects\"\
+          )),\n            \"skills\": [str(x).strip() for x in _as_list(payload.get(\"skills\")) if str(x).strip()],\n  \
+          \          \"standardized_text\": standardized,\n            \"candidate_id\": _as_str(candidate_id),\n        }\n\
+          \        return {\"result\": json.dumps(result, ensure_ascii=False)}\n    except Exception as e:\n        return\
+          \ {\"result\": json.dumps({\"error\": str(e)}, ensure_ascii=False)}\n"
+        code_language: python3
+        outputs:
+          result:
+            children: null
+            type: string
+        selected: false
+        title: 代码·规范化
+        type: code
+        variables:
+        - value_selector:
+          - '1786500001002'
+          - structured_output
+          value_type: object
+          variable: structured_out
+        - value_selector:
+          - '1786500001002'
+          - text
+          value_type: string
+          variable: llm_text
+        - value_selector:
+          - '1786500001001'
+          - resume_text
+          value_type: string
+          variable: resume_text
+        - value_selector:
+          - '1786500001001'
+          - candidate_id
+          value_type: string
+          variable: candidate_id
+      height: 52
+      id: '1786500001003'
+      position:
+        x: 680
+        y: 280
+      positionAbsolute:
+        x: 680
+        y: 280
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        outputs:
+        - value_selector:
+          - '1786500001003'
+          - result
+          value_type: string
+          variable: result
+        selected: false
+        title: 输出
+        type: end
+      height: 90
+      id: '1786500001004'
+      position:
+        x: 1000
+        y: 280
+      positionAbsolute:
+        x: 1000
+        y: 280
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    viewport:
+      x: 80
+      y: 80
+      zoom: 0.7
+  rag_pipeline_variables: []

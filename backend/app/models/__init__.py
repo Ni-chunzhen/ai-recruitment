@@ -1,0 +1,279 @@
+import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Table,
+    UniqueConstraint,
+    Uuid,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base import Base
+from app.models.ai_task import (  # noqa: F401
+    AI_TASK_MAX_ATTEMPTS,
+    AI_TASK_RETRY_COUNTDOWNS,
+    AI_TASK_STATUS_CANCELLED,
+    AI_TASK_STATUS_FAILED,
+    AI_TASK_STATUS_OUTPUT_INVALID,
+    AI_TASK_STATUS_PENDING,
+    AI_TASK_STATUS_RUNNING,
+    AI_TASK_STATUS_SUCCEEDED,
+    AI_TASK_STATUSES,
+    BUSINESS_TYPE_APPLICATION,
+    BUSINESS_TYPE_JOB,
+    BUSINESS_TYPE_RESUME_VERSION,
+    ERROR_CATEGORY_NON_RETRYABLE,
+    ERROR_CATEGORY_RETRYABLE,
+    TASK_TYPE_JD_PARSE,
+    TASK_TYPE_RESUME_PARSE,
+    TASK_TYPE_RESUME_SCORE,
+    TASK_TYPE_SCORE_DIMENSION_RECOMMEND,
+    TASK_TYPES,
+    AITask,
+    AITaskAttempt,
+)
+from app.models.candidate import (  # noqa: F401
+    APPLICATION_STATUS_HIRED,
+    APPLICATION_STATUS_IN_PROGRESS,
+    APPLICATION_STATUS_REJECTED,
+    APPLICATION_STATUS_TERMINATED,
+    APPLICATION_STATUS_TRANSFERRED,
+    APPLICATION_STATUSES,
+    CLOSE_ACTION_REJECT,
+    CLOSE_ACTION_TERMINATE,
+    CLOSE_ACTION_TRANSFER,
+    CLOSE_ACTIONS,
+    IN_FLIGHT_STATUSES,
+    INTERVIEW_TASK_ACTIVE,
+    INTERVIEW_TASK_CANCELLED,
+    INTERVIEW_TASK_NONE,
+    INTERVIEW_TASK_PENDING_CANCEL,
+    INTERVIEW_TASK_PENDING_REBUILD,
+    INTERVIEW_TASK_REBUILT,
+    INTERVIEW_TASK_STATES,
+    TIMELINE_EVENT_VERSION_MIGRATED,
+    Candidate,
+    JobApplication,
+)
+from app.models.job import (  # noqa: F401
+    JOB_STATUS_CLOSED,
+    JOB_STATUS_DRAFT,
+    JOB_STATUS_LABELS,
+    JOB_STATUS_OPEN,
+    JOB_STATUS_PAUSED,
+    UPGRADE_INITIAL,
+    UPGRADE_MAJOR,
+    UPGRADE_MINOR,
+    VERSION_STATUS_DRAFT,
+    VERSION_STATUS_PUBLISHED,
+    VERSION_STATUS_SUPERSEDED,
+    Job,
+    JobCodeSequence,
+    JobVersion,
+    empty_structured_jd,
+)
+from app.models.resume import (  # noqa: F401
+    PIPELINE_INTERVIEWING,
+    PIPELINE_PENDING_HR_SCREEN,
+    PIPELINE_PENDING_PARSE,
+    PIPELINE_REJECTED,
+    PIPELINE_STATUSES,
+    PIPELINE_TALENT_POOL,
+    RESUME_STATUS_CONFIRMED,
+    RESUME_STATUS_PARSE_FAILED,
+    RESUME_STATUS_PARSING,
+    RESUME_STATUS_PENDING_PARSE,
+    RESUME_STATUS_PENDING_REVIEW,
+    RESUME_STATUS_VOID,
+    RESUME_STATUSES,
+    SCREENING_DECISIONS,
+    SCREENING_ENTER_INTERVIEW,
+    SCREENING_HOLD,
+    SCREENING_REASON_CODES,
+    SCREENING_REASON_REQUIRED_DECISIONS,
+    SCREENING_REJECT,
+    SCREENING_TALENT_POOL,
+    VERSION_KIND_CONFIRMED,
+    VERSION_KIND_FILE,
+    AiResult,
+    ApplicationStatusLog,
+    Resume,
+    ResumeVersion,
+    ScreeningDecision,
+)
+
+user_roles = Table(
+    "user_roles",
+    Base.metadata,
+    Column("user_id", Uuid(as_uuid=True), ForeignKey("users.id"), primary_key=True),
+    Column("role_id", Uuid(as_uuid=True), ForeignKey("roles.id"), primary_key=True),
+    UniqueConstraint("user_id", "role_id", name="uq_user_roles_user_role"),
+)
+
+role_permissions = Table(
+    "role_permissions",
+    Base.metadata,
+    Column("role_id", Uuid(as_uuid=True), ForeignKey("roles.id"), primary_key=True),
+    Column(
+        "permission_id",
+        Uuid(as_uuid=True),
+        ForeignKey("permissions.id"),
+        primary_key=True,
+    ),
+    UniqueConstraint(
+        "role_id", "permission_id", name="uq_role_permissions_role_permission"
+    ),
+)
+
+SENSITIVE_AUDIT_KEYS = frozenset(
+    {
+        "password",
+        "password_hash",
+        "token",
+        "refresh_token",
+        "access_token",
+        "authorization",
+        "cookie",
+        "temporary_password",
+        "api_key",
+        "dify_api_key",
+        "minio_secret_key",
+        "standardized_text",
+        "extracted_text",
+        "resume_text",
+        "jd_content",
+    }
+)
+
+
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
+def sanitize_audit_changes(changes: dict | None) -> dict | None:
+    if changes is None:
+        return None
+
+    sanitized: dict = {}
+    for key, value in changes.items():
+        if key.lower() in SENSITIVE_AUDIT_KEYS:
+            raise ValueError(f"sensitive key not allowed in audit changes: {key}")
+        if isinstance(value, dict):
+            sanitized[key] = sanitize_audit_changes(value)
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    username: Mapped[str] = mapped_column(String(64), unique=True)
+    username_normalized: Mapped[str] = mapped_column(String(64), unique=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_version: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    roles: Mapped[list["Role"]] = relationship(
+        secondary=user_roles,
+        back_populates="users",
+    )
+    audit_logs: Mapped[list["AuditLog"]] = relationship(
+        back_populates="actor",
+        foreign_keys="AuditLog.actor_user_id",
+    )
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+    users: Mapped[list[User]] = relationship(
+        secondary=user_roles,
+        back_populates="roles",
+    )
+    permissions: Mapped[list["Permission"]] = relationship(
+        secondary=role_permissions,
+        back_populates="roles",
+    )
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    code: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+    roles: Mapped[list[Role]] = relationship(
+        secondary=role_permissions,
+        back_populates="permissions",
+    )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_logs_occurred_at_id", "occurred_at", "id"),
+        Index("ix_audit_logs_actor_user_id", "actor_user_id"),
+        Index("ix_audit_logs_action", "action"),
+        Index("ix_audit_logs_resource", "resource_type", "resource_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(64))
+    resource_type: Mapped[str] = mapped_column(String(64))
+    resource_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result: Mapped[str] = mapped_column(String(32))
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str] = mapped_column(String(64))
+    changes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    actor: Mapped[User | None] = relationship(
+        back_populates="audit_logs",
+        foreign_keys=[actor_user_id],
+    )
