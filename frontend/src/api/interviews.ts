@@ -20,6 +20,10 @@ export type InterviewAction =
   | 'finish'
   | 'complete'
   | 'end_abnormally'
+  | 'generate_invitation'
+  | 'view_invitation'
+  | 'confirm_invitation'
+  | 'generate_cancellation'
 
 export interface InterviewerAssignment {
   interviewer_id: string
@@ -69,6 +73,11 @@ export interface InterviewRound {
   started_at?: string | null
   finished_at?: string | null
   cancelled_at?: string | null
+  invitation_confirmed_at?: string | null
+  invitation_confirmed_by?: string | null
+  invitation_confirmed_by_name?: string | null
+  invitation_confirmed_schedule_version?: number | null
+  invitation_confirmation_summary?: string | null
   created_at: string
   updated_at: string
 }
@@ -312,6 +321,291 @@ export async function listInterviewReasonCodes() {
 export async function listInterviewStaff() {
   const { data } = await apiClient.get<{ items: InterviewStaffItem[] }>(
     '/interview-staff',
+  )
+  return data
+}
+
+export type TranscriptSourceMethod = 'PASTE' | 'TXT' | 'MD'
+export type TranscriptSpeakerRole =
+  | 'CANDIDATE'
+  | 'INTERVIEWER'
+  | 'OTHER'
+  | 'UNKNOWN'
+export type TranscriptVersionType = 'ORIGINAL' | 'DRAFT' | 'CONFIRMED'
+export type TranscriptVersionStatus = 'EDITING' | 'IMMUTABLE'
+export type TranscriptSegmentSourceType =
+  | 'ORIGINAL'
+  | 'CORRECTED'
+  | 'MANUAL_ADDITION'
+
+export interface TranscriptPreviewSegment {
+  segment_no: number
+  speaker_key: string
+  speaker_name: string
+  speaker_role: string
+  start_time_ms: number | null
+  end_time_ms: number | null
+  text: string
+  matched_rule: string
+}
+
+export interface TranscriptPreview {
+  encoding: string
+  sha256: string
+  char_count: number
+  segment_count: number
+  matched_rules: string[]
+  source_method: string
+  filename: string | null
+  size: number
+  mime: string | null
+  segments: TranscriptPreviewSegment[]
+}
+
+export interface TranscriptImportSegment {
+  speaker_key: string
+  speaker_name: string
+  speaker_role: TranscriptSpeakerRole | string
+  text: string
+  start_time_ms?: number | null
+  end_time_ms?: number | null
+  is_unclear?: boolean
+  is_included_in_analysis?: boolean
+  source_segment_refs?: number[]
+}
+
+export interface TranscriptImportRequest {
+  idempotency_key: string
+  source_method?: TranscriptSourceMethod | string | null
+  raw_text?: string | null
+  filename?: string | null
+  source_sha256: string
+  segments: TranscriptImportSegment[]
+}
+
+export interface TranscriptSegment {
+  id: string
+  segment_no: number
+  speaker_key: string
+  speaker_name: string
+  speaker_role: string
+  start_time_ms: number | null
+  end_time_ms: number | null
+  text: string
+  source_type: string
+  source_segment_refs: number[]
+  is_included_in_analysis: boolean
+  is_unclear: boolean
+}
+
+export interface TranscriptSummary {
+  id: string
+  interview_round_id: string
+  original_version_id: string | null
+  current_draft_version_id: string | null
+  current_confirmed_version_id: string | null
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface TranscriptVersionSummary {
+  id: string
+  transcript_id: string
+  version_type: string
+  version_no: number
+  version_label: string
+  status: string
+  source_method: string
+  source_filename: string | null
+  source_size: number | null
+  source_mime: string | null
+  source_encoding: string | null
+  based_on_version_id: string | null
+  segment_count: number
+  confirmed_by: string | null
+  confirmed_at: string | null
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface TranscriptList {
+  transcript: TranscriptSummary | null
+  versions: TranscriptVersionSummary[]
+}
+
+export interface TranscriptVersionDetail {
+  id: string
+  transcript_id: string
+  interview_round_id: string
+  version_type: string
+  version_no: number
+  version_label: string
+  status: string
+  source_method: string
+  source_filename: string | null
+  source_size: number | null
+  source_mime: string | null
+  source_encoding: string | null
+  source_sha256: string
+  based_on_version_id: string | null
+  confirmed_by: string | null
+  confirmed_at: string | null
+  version: number
+  created_at: string
+  updated_at: string
+  segments: TranscriptSegment[]
+  raw_text: string
+}
+
+export interface DraftSegmentPayload {
+  speaker_key: string
+  speaker_name: string
+  speaker_role: TranscriptSpeakerRole | string
+  text: string
+  start_time_ms?: number | null
+  end_time_ms?: number | null
+  is_unclear?: boolean
+  is_included_in_analysis?: boolean
+  source_segment_refs?: number[]
+}
+
+export interface TranscriptChangeCounts {
+  speaker_changes: number
+  text_corrections: number
+  merge_split_count: number
+  deleted_count: number
+  manual_addition_count: number
+  excluded_from_analysis_count: number
+  reorder_count: number
+}
+
+export interface DraftSaveResponse {
+  version: TranscriptVersionDetail
+  change_counts: TranscriptChangeCounts
+}
+
+export interface CompleteWithoutTranscriptRequest {
+  reason_code: string
+  description?: string | null
+  version: number
+  idempotency_key: string
+}
+
+export interface CompleteWithoutTranscriptResult {
+  round_id: string
+  status: string
+  version: number
+  transcript_completion_mode: string
+  transcript_completion_reason_code: string
+  transcript_completion_reason_description: string | null
+  transcript_completed_by: string
+  transcript_completed_at: string
+}
+
+export interface TranscriptReasonCode {
+  code: string
+  label: string
+  requires_description: boolean
+}
+
+export async function previewTranscript(
+  roundId: string,
+  payload: { text: string } | FormData,
+) {
+  const body =
+    payload instanceof FormData
+      ? payload
+      : (() => {
+          const form = new FormData()
+          form.append('text', payload.text)
+          return form
+        })()
+  const { data } = await apiClient.post<TranscriptPreview>(
+    `/interview-rounds/${roundId}/transcripts/preview`,
+    body,
+  )
+  return data
+}
+
+export async function importTranscript(
+  roundId: string,
+  body: TranscriptImportRequest,
+) {
+  const { data } = await apiClient.post<TranscriptVersionDetail>(
+    `/interview-rounds/${roundId}/transcripts`,
+    body,
+  )
+  return data
+}
+
+export async function getRoundTranscripts(roundId: string) {
+  const { data } = await apiClient.get<TranscriptList>(
+    `/interview-rounds/${roundId}/transcripts`,
+  )
+  return data
+}
+
+export async function getTranscriptVersion(versionId: string) {
+  const { data } = await apiClient.get<TranscriptVersionDetail>(
+    `/transcript-versions/${versionId}`,
+  )
+  return data
+}
+
+export async function createTranscriptDraft(
+  transcriptId: string,
+  body: { idempotency_key: string },
+) {
+  const { data } = await apiClient.post<TranscriptVersionDetail>(
+    `/interview-transcripts/${transcriptId}/draft`,
+    body,
+  )
+  return data
+}
+
+export async function saveTranscriptDraft(
+  draftId: string,
+  body: {
+    draft_version_id: string
+    version: number
+    idempotency_key: string
+    segments: DraftSegmentPayload[]
+  },
+) {
+  const { data } = await apiClient.put<DraftSaveResponse>(
+    `/transcript-versions/${draftId}/draft`,
+    body,
+  )
+  return data
+}
+
+export async function confirmTranscriptDraft(
+  draftId: string,
+  body: { idempotency_key: string; version: number },
+) {
+  const { data } = await apiClient.post<TranscriptVersionDetail>(
+    `/transcript-versions/${draftId}/confirm`,
+    body,
+  )
+  return data
+}
+
+export async function completeWithoutTranscript(
+  roundId: string,
+  body: CompleteWithoutTranscriptRequest,
+) {
+  const { data } = await apiClient.post<CompleteWithoutTranscriptResult>(
+    `/interview-rounds/${roundId}/complete-without-transcript`,
+    body,
+  )
+  return data
+}
+
+export async function getTranscriptReasonCodes() {
+  const { data } = await apiClient.get<{ items: TranscriptReasonCode[] }>(
+    '/interview-transcript-reason-codes',
   )
   return data
 }

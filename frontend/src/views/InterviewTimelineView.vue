@@ -6,11 +6,12 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   cancelInterviewRound,
   checkInterviewConflicts,
-  completeInterviewRound,
   createInterviewRound,
+  createTranscriptDraft,
   endInterviewAbnormally,
   finishInterviewRound,
   getInterviewTimeline,
+  getRoundTranscripts,
   listInterviewReasonCodes,
   listInterviewStaff,
   rescheduleInterviewRound,
@@ -22,7 +23,12 @@ import {
   type InterviewRound,
   type InterviewStaffItem,
   type InterviewTimeline,
+  type TranscriptList,
 } from '../api/interviews'
+import { confirmInvitation } from '../api/invitations'
+import CompleteWithoutTranscriptDialog from '../components/interviews/CompleteWithoutTranscriptDialog.vue'
+import TranscriptImportDrawer from '../components/interviews/TranscriptImportDrawer.vue'
+import InterviewInvitationDrawer from '../components/InterviewInvitationDrawer.vue'
 import AdminLayout from '../layouts/AdminLayout.vue'
 import { useAuthStore } from '../stores/auth'
 
@@ -63,7 +69,13 @@ const drawerMode = ref<'create' | 'edit' | 'schedule'>('create')
 const rescheduleOpen = ref(false)
 const cancelOpen = ref(false)
 const abnormalOpen = ref(false)
+const invitationOpen = ref(false)
+const confirmInviteOpen = ref(false)
+const confirmSendSummary = ref('')
 const activeRound = ref<InterviewRound | null>(null)
+const importOpen = ref(false)
+const withoutOpen = ref(false)
+const transcriptByRound = ref<Record<string, TranscriptList>>({})
 
 const form = reactive({
   name: '',
@@ -140,6 +152,47 @@ function hasAction(round: InterviewRound, action: string) {
   return (round.allowed_actions as string[]).includes(action)
 }
 
+function openInvitationDrawer(round: InterviewRound) {
+  activeRound.value = round
+  invitationOpen.value = true
+}
+
+function openConfirmInvitation(round: InterviewRound) {
+  activeRound.value = round
+  confirmSendSummary.value = ''
+  confirmInviteOpen.value = true
+}
+
+function needsRescheduleInviteHint(round: InterviewRound) {
+  const version = round.current_schedule?.schedule_version || 0
+  return (
+    round.status === 'SCHEDULED' &&
+    version > 1 &&
+    (round.invitation_confirmed_schedule_version == null ||
+      round.invitation_confirmed_schedule_version < version)
+  )
+}
+
+async function submitConfirmInvitation() {
+  if (!activeRound.value?.current_schedule) return
+  saving.value = true
+  try {
+    await confirmInvitation(activeRound.value.id, {
+      schedule_version: activeRound.value.current_schedule.schedule_version,
+      version: activeRound.value.version,
+      send_summary: confirmSendSummary.value.trim() || null,
+      idempotency_key: newIdempotencyKey('invite-confirm'),
+    })
+    ElMessage.success('已确认邀约完成')
+    confirmInviteOpen.value = false
+    await load()
+  } catch (err) {
+    handleActionError(err, '确认邀约失败')
+  } finally {
+    saving.value = false
+  }
+}
+
 function toIso(value: string) {
   if (!value) return ''
   const date = new Date(value)
@@ -191,6 +244,24 @@ function resetForm() {
   form.override_reason = ''
 }
 
+async function loadTranscriptSummaries(rounds: InterviewRound[]) {
+  const targets = rounds.filter(
+    (round) =>
+      round.status === 'PENDING_TRANSCRIPT' || round.status === 'COMPLETED',
+  )
+  const next: Record<string, TranscriptList> = { ...transcriptByRound.value }
+  await Promise.all(
+    targets.map(async (round) => {
+      try {
+        next[round.id] = await getRoundTranscripts(round.id)
+      } catch {
+        // Keep previous entry if refresh fails for a single round.
+      }
+    }),
+  )
+  transcriptByRound.value = next
+}
+
 async function load() {
   loading.value = true
   conflictMessage.value = ''
@@ -217,12 +288,102 @@ async function load() {
         : Promise.resolve(),
     ])
     timeline.value = timelineData
+    await loadTranscriptSummaries(timelineData.rounds)
   } catch (err: unknown) {
     timeline.value = null
     ElMessage.error(String(errorDetail(err, '加载面试时间轴失败')))
   } finally {
     loading.value = false
   }
+}
+
+function transcriptOf(round: InterviewRound): TranscriptList | null {
+  return transcriptByRound.value[round.id] ?? null
+}
+
+function hasTranscript(round: InterviewRound) {
+  return Boolean(transcriptOf(round)?.transcript)
+}
+
+function hasDraft(round: InterviewRound) {
+  return Boolean(transcriptOf(round)?.transcript?.current_draft_version_id)
+}
+
+function hasConfirmed(round: InterviewRound) {
+  return Boolean(transcriptOf(round)?.transcript?.current_confirmed_version_id)
+}
+
+function originalVersionId(round: InterviewRound) {
+  return transcriptOf(round)?.transcript?.original_version_id ?? null
+}
+
+function confirmedVersionId(round: InterviewRound) {
+  return transcriptOf(round)?.transcript?.current_confirmed_version_id ?? null
+}
+
+function openImport(round: InterviewRound) {
+  activeRound.value = round
+  importOpen.value = true
+}
+
+function openWithoutTranscript(round: InterviewRound) {
+  activeRound.value = round
+  withoutOpen.value = true
+}
+
+function goTranscript(
+  round: InterviewRound,
+  query: Record<string, string | undefined> = {},
+) {
+  void router.push({
+    name: 'interview-transcript',
+    params: { roundId: round.id },
+    query: {
+      applicationId: applicationId.value,
+      ...query,
+    },
+  })
+}
+
+async function startProofread(round: InterviewRound) {
+  const list = transcriptOf(round)
+  const transcript = list?.transcript
+  if (!transcript) {
+    ElMessage.warning('尚未导入听记')
+    return
+  }
+  if (transcript.current_draft_version_id) {
+    goTranscript(round, {
+      focus: 'draft',
+      versionId: transcript.current_draft_version_id,
+    })
+    return
+  }
+  saving.value = true
+  try {
+    const draft = await createTranscriptDraft(transcript.id, {
+      idempotency_key: newIdempotencyKey('draft-create'),
+    })
+    goTranscript(round, { focus: 'draft', versionId: draft.id })
+  } catch (err) {
+    handleActionError(err, '创建校对草稿失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+function openConfirmProofread(round: InterviewRound) {
+  const draftId = transcriptOf(round)?.transcript?.current_draft_version_id
+  if (!draftId) return
+  goTranscript(round, { focus: 'draft', versionId: draftId, openConfirm: '1' })
+}
+
+function onImported(versionId: string) {
+  if (!activeRound.value) return
+  const round = activeRound.value
+  void load().then(() => {
+    goTranscript(round, { focus: 'original', versionId })
+  })
 }
 
 function openCreate() {
@@ -520,21 +681,15 @@ async function submitAbnormal() {
   }
 }
 
-async function runAction(round: InterviewRound, action: 'start' | 'finish' | 'complete') {
+async function runAction(round: InterviewRound, action: 'start' | 'finish') {
   saving.value = true
   try {
-    if (action === 'complete') {
-      await ElMessageBox.confirm('确认本轮面试事实已完成？不会改变招聘决定。', '确认完成', {
-        type: 'warning',
-      })
-    }
     const payload = {
       version: round.version,
       idempotency_key: newIdempotencyKey(action),
     }
     if (action === 'start') await startInterviewRound(round.id, payload)
     if (action === 'finish') await finishInterviewRound(round.id, payload)
-    if (action === 'complete') await completeInterviewRound(round.id, payload)
     ElMessage.success('已更新')
     await load()
   } catch (err: unknown) {
@@ -633,6 +788,35 @@ onMounted(() => {
                 </div>
                 <div class="round-actions">
                   <el-button
+                    v-if="hasAction(round, 'generate_invitation') || hasAction(round, 'generate_cancellation')"
+                    link
+                    type="primary"
+                    size="small"
+                    data-test="generate-invitation"
+                    @click="openInvitationDrawer(round)"
+                  >
+                    {{ round.status === 'CANCELLED' ? '生成取消邮件' : '生成邀约邮件' }}
+                  </el-button>
+                  <el-button
+                    v-if="hasAction(round, 'view_invitation')"
+                    link
+                    type="primary"
+                    size="small"
+                    data-test="view-invitation"
+                    @click="openInvitationDrawer(round)"
+                  >
+                    {{ round.status === 'CANCELLED' ? '查看取消通知记录' : '查看邀约' }}
+                  </el-button>
+                  <el-button
+                    v-if="hasAction(round, 'confirm_invitation')"
+                    type="primary"
+                    size="small"
+                    data-test="confirm-invitation"
+                    @click="openConfirmInvitation(round)"
+                  >
+                    确认邀约完成
+                  </el-button>
+                  <el-button
                     v-if="hasAction(round, 'edit')"
                     link
                     type="primary"
@@ -701,14 +885,123 @@ onMounted(() => {
                   >
                     异常结束
                   </el-button>
+                  <template v-if="canManage && round.status === 'PENDING_TRANSCRIPT'">
+                    <el-button
+                      v-if="!hasTranscript(round)"
+                      type="primary"
+                      size="small"
+                      data-test="import-transcript"
+                      @click="openImport(round)"
+                    >
+                      导入听记文本
+                    </el-button>
+                    <el-button
+                      v-if="!hasTranscript(round)"
+                      size="small"
+                      data-test="complete-without-transcript"
+                      @click="openWithoutTranscript(round)"
+                    >
+                      无转写完成
+                    </el-button>
+                    <el-button
+                      v-if="hasTranscript(round) && !hasDraft(round)"
+                      type="primary"
+                      size="small"
+                      data-test="start-proofread"
+                      :loading="saving"
+                      @click="startProofread(round)"
+                    >
+                      开始校对
+                    </el-button>
+                    <el-button
+                      v-if="hasTranscript(round)"
+                      link
+                      type="primary"
+                      size="small"
+                      data-test="view-original"
+                      @click="
+                        goTranscript(round, {
+                          focus: 'original',
+                          versionId: originalVersionId(round) || undefined,
+                        })
+                      "
+                    >
+                      查看原始版本
+                    </el-button>
+                    <el-button
+                      v-if="hasDraft(round)"
+                      type="primary"
+                      size="small"
+                      data-test="continue-proofread"
+                      @click="startProofread(round)"
+                    >
+                      继续校对
+                    </el-button>
+                    <el-button
+                      v-if="hasDraft(round)"
+                      type="primary"
+                      plain
+                      size="small"
+                      data-test="confirm-proofread"
+                      @click="openConfirmProofread(round)"
+                    >
+                      确认校对
+                    </el-button>
+                  </template>
+                  <template v-if="canManage && round.status === 'COMPLETED'">
+                    <el-button
+                      v-if="hasConfirmed(round)"
+                      link
+                      type="primary"
+                      size="small"
+                      data-test="view-confirmed"
+                      @click="
+                        goTranscript(round, {
+                          focus: 'confirmed',
+                          versionId: confirmedVersionId(round) || undefined,
+                        })
+                      "
+                    >
+                      查看确认版本
+                    </el-button>
+                    <el-button
+                      link
+                      type="primary"
+                      size="small"
+                      data-test="view-history"
+                      @click="goTranscript(round, { focus: 'history' })"
+                    >
+                      版本历史
+                    </el-button>
+                    <el-button
+                      type="primary"
+                      size="small"
+                      data-test="reproofread"
+                      :loading="saving"
+                      @click="startProofread(round)"
+                    >
+                      再次校对
+                    </el-button>
+                  </template>
                   <el-button
-                    v-if="hasAction(round, 'complete')"
+                    v-if="
+                      !canManage &&
+                      hasConfirmed(round) &&
+                      (round.status === 'COMPLETED' ||
+                        round.status === 'PENDING_TRANSCRIPT')
+                    "
+                    link
                     type="primary"
                     size="small"
-                    data-test="complete"
-                    @click="runAction(round, 'complete')"
+                    data-test="view-confirmed-interviewer"
+                    @click="
+                      goTranscript(round, {
+                        focus: 'confirmed',
+                        versionId: confirmedVersionId(round) || undefined,
+                      })
+                    "
                   >
-                    确认完成
+                    查看已确认转写
                   </el-button>
                 </div>
               </div>
@@ -721,6 +1014,22 @@ onMounted(() => {
                 · 负责人 {{ round.owner_name || '—' }}
                 · 面试官 {{ interviewerLabel(round) || '—' }}
                 · 安排版本 {{ round.current_schedule?.schedule_version || '—' }}
+              </p>
+              <p
+                v-if="round.status === 'CONFIRMED'"
+                class="round-meta"
+                data-test="invitation-confirmed-meta"
+              >
+                邀约确认人 {{ round.invitation_confirmed_by_name || '—' }}
+                · 确认时间 {{ formatLocal(round.invitation_confirmed_at, 'Asia/Shanghai') }}
+                · 确认安排版本 {{ round.invitation_confirmed_schedule_version || '—' }}
+              </p>
+              <p
+                v-if="needsRescheduleInviteHint(round)"
+                class="round-meta invite-hint"
+                data-test="reschedule-invite-hint"
+              >
+                安排版本已更新，原邀约内容已失效，请重新生成并确认。
               </p>
             </div>
           </el-timeline-item>
@@ -911,6 +1220,60 @@ onMounted(() => {
         <el-button type="danger" :loading="saving" @click="submitAbnormal">确认</el-button>
       </template>
     </el-dialog>
+
+    <InterviewInvitationDrawer
+      v-model:open="invitationOpen"
+      :round="activeRound"
+      :can-manage="canManage"
+      @refreshed="load"
+    />
+
+    <TranscriptImportDrawer
+      v-model:open="importOpen"
+      :round-id="activeRound?.id ?? null"
+      @imported="onImported"
+    />
+
+    <CompleteWithoutTranscriptDialog
+      v-model:open="withoutOpen"
+      :round-id="activeRound?.id ?? null"
+      :round-version="activeRound?.version ?? 0"
+      @completed="load"
+    />
+
+    <el-dialog
+      v-model="confirmInviteOpen"
+      title="确认邀约完成"
+      width="560px"
+      data-test="confirm-invitation-dialog"
+    >
+      <p>
+        当前安排版本：{{ activeRound?.current_schedule?.schedule_version ?? '—' }}
+      </p>
+      <p class="invite-hint">
+        确认表示招聘人员已完成当前安排版本的邀约工作，不表示候选人回复，也不表示邮件送达。
+      </p>
+      <el-form-item label="发送概况（存在未登记项时必填）">
+        <el-input
+          v-model="confirmSendSummary"
+          type="textarea"
+          :rows="3"
+          data-test="confirm-send-summary"
+          placeholder="例如：候选人与全部面试官已通过企业邮箱人工发送"
+        />
+      </el-form-item>
+      <template #footer>
+        <el-button @click="confirmInviteOpen = false">返回</el-button>
+        <el-button
+          type="primary"
+          data-test="submit-confirm-invitation"
+          :loading="saving"
+          @click="submitConfirmInvitation"
+        >
+          二次确认并完成
+        </el-button>
+      </template>
+    </el-dialog>
   </AdminLayout>
 </template>
 
@@ -979,6 +1342,9 @@ h3 {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 12px;
+}
+.invite-hint {
+  color: #b45309;
 }
 .round-actions {
   display: flex;

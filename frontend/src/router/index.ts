@@ -13,6 +13,7 @@ import ResumeReviewView from '../views/ResumeReviewView.vue'
 import ResumesListView from '../views/ResumesListView.vue'
 import ScoreReportView from '../views/ScoreReportView.vue'
 import InterviewTimelineView from '../views/InterviewTimelineView.vue'
+import InterviewTranscriptView from '../views/InterviewTranscriptView.vue'
 import AiTasksView from '../views/AiTasksView.vue'
 
 const router = createRouter({
@@ -94,6 +95,15 @@ const router = createRouter({
       path: '/applications/:applicationId/interviews',
       name: 'application-interviews',
       component: InterviewTimelineView,
+      meta: {
+        requiresAuth: true,
+        anyPermission: ['recruitment.manage', 'interview.execute'],
+      },
+    },
+    {
+      path: '/interview-rounds/:roundId/transcript',
+      name: 'interview-transcript',
+      component: InterviewTranscriptView,
       meta: {
         requiresAuth: true,
         anyPermission: ['recruitment.manage', 'interview.execute'],

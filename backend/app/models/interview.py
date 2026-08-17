@@ -220,6 +220,37 @@ class InterviewRound(Base):
     cancelled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    invitation_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invitation_confirmed_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    invitation_confirmed_schedule_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    invitation_confirmation_summary: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    transcript_completion_mode: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    transcript_completion_reason_code: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    transcript_completion_reason_description: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    transcript_completed_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    transcript_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     interviewers: Mapped[list["InterviewRoundInterviewer"]] = relationship(
         back_populates="interview_round",

@@ -110,12 +110,16 @@ def test_allowed_actions_matrix() -> None:
         "reschedule",
         "cancel",
         "start",
+        "generate_invitation",
+        "view_invitation",
+        "confirm_invitation",
     }
     assert set(allowed_actions_for_status(INTERVIEW_STATUS_CONFIRMED)) == {
         "edit",
         "reschedule",
         "cancel",
         "start",
+        "view_invitation",
     }
     assert set(allowed_actions_for_status(INTERVIEW_STATUS_IN_PROGRESS)) == {
         "finish",
@@ -125,9 +129,19 @@ def test_allowed_actions_matrix() -> None:
         "complete",
     }
     assert allowed_actions_for_status(INTERVIEW_STATUS_COMPLETED) == []
-    assert allowed_actions_for_status(INTERVIEW_STATUS_CANCELLED) == []
+    assert set(allowed_actions_for_status(INTERVIEW_STATUS_CANCELLED)) == {
+        "generate_cancellation",
+        "view_invitation",
+    }
     assert allowed_actions_for_status(INTERVIEW_STATUS_ENDED_ABNORMALLY) == []
 
+
+def test_confirm_invitation_from_scheduled() -> None:
+    assert_transition(
+        INTERVIEW_STATUS_SCHEDULED,
+        INTERVIEW_STATUS_CONFIRMED,
+        "confirm_invitation",
+    )
 
 def test_adjacent_intervals_do_not_overlap() -> None:
     start = datetime(2026, 8, 14, 10, 0, tzinfo=UTC)

@@ -210,6 +210,11 @@ class InterviewRoundOut(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     cancelled_at: datetime | None = None
+    invitation_confirmed_at: datetime | None = None
+    invitation_confirmed_by: UUID | None = None
+    invitation_confirmed_by_name: str | None = None
+    invitation_confirmed_schedule_version: int | None = None
+    invitation_confirmation_summary: str | None = None
     created_at: datetime
     updated_at: datetime
 

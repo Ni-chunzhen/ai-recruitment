@@ -85,7 +85,15 @@ function makeRound(overrides: Partial<InterviewRound> = {}): InterviewRound {
     },
     schedule_history: [],
     version: 1,
-    allowed_actions: ['edit', 'reschedule', 'cancel', 'start'],
+    allowed_actions: [
+      'edit',
+      'reschedule',
+      'cancel',
+      'start',
+      'generate_invitation',
+      'view_invitation',
+      'confirm_invitation',
+    ],
     created_at: '2026-08-14T00:00:00Z',
     updated_at: '2026-08-14T00:00:00Z',
     ...overrides,
@@ -164,6 +172,42 @@ vi.mock('../src/api/interviews', () => ({
   checkInterviewConflicts: vi.fn(),
   listInterviewReasonCodes: vi.fn(),
   listInterviewStaff: vi.fn(),
+  getRoundTranscripts: vi.fn(),
+  createTranscriptDraft: vi.fn(),
+  getTranscriptReasonCodes: vi.fn(),
+  completeWithoutTranscript: vi.fn(),
+  previewTranscript: vi.fn(),
+  importTranscript: vi.fn(),
+}))
+
+vi.mock('../src/api/invitations', () => ({
+  confirmInvitation: vi.fn(),
+  generateInvitations: vi.fn(),
+  listInvitations: vi.fn(),
+  getInvitationDetail: vi.fn(),
+  updateInvitation: vi.fn(),
+  auditInvitationCopy: vi.fn(),
+  recordInvitationSent: vi.fn(),
+}))
+
+vi.mock('../src/components/InterviewInvitationDrawer.vue', () => ({
+  default: {
+    name: 'InterviewInvitationDrawer',
+    props: ['open', 'round', 'canManage'],
+    emits: ['update:open', 'refreshed'],
+    template:
+      '<div v-if="open" data-test="invitation-drawer-stub">邀约抽屉</div>',
+  },
+}))
+
+vi.mock('../src/components/interviews/TranscriptImportDrawer.vue', () => ({
+  default: {
+    name: 'TranscriptImportDrawer',
+    props: ['open', 'roundId'],
+    emits: ['update:open', 'imported'],
+    template:
+      '<div v-if="open" data-test="import-drawer-stub">导入抽屉</div>',
+  },
 }))
 
 const router = createRouter({
@@ -178,6 +222,11 @@ const router = createRouter({
       path: '/applications/:applicationId/score-report',
       name: 'score-report',
       component: { template: '<div>score</div>' },
+    },
+    {
+      path: '/interview-rounds/:roundId/transcript',
+      name: 'interview-transcript',
+      component: { template: '<div>transcript</div>' },
     },
   ],
 })
@@ -287,6 +336,24 @@ describe('InterviewTimelineView', () => {
     vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(makeTimeline())
     vi.mocked(interviewsApi.listInterviewReasonCodes).mockResolvedValue(reasonCodes)
     vi.mocked(interviewsApi.listInterviewStaff).mockResolvedValue(staff)
+    vi.mocked(interviewsApi.getRoundTranscripts).mockResolvedValue({
+      transcript: null,
+      versions: [],
+    })
+    vi.mocked(interviewsApi.getTranscriptReasonCodes).mockResolvedValue({
+      items: [
+        {
+          code: 'CONTENT_UNUSABLE',
+          label: '内容无法使用',
+          requires_description: false,
+        },
+        {
+          code: 'OTHER',
+          label: '其他',
+          requires_description: true,
+        },
+      ],
+    })
     vi.mocked(interviewsApi.checkInterviewConflicts).mockResolvedValue({
       has_candidate_conflict: false,
       has_interviewer_conflict: false,
@@ -375,6 +442,27 @@ describe('InterviewTimelineView', () => {
         }),
       ]),
     )
+    vi.mocked(interviewsApi.getRoundTranscripts).mockImplementation(async (roundId) => {
+      if (roundId === ROUND_PENDING) {
+        return { transcript: null, versions: [] }
+      }
+      if (roundId === ROUND_DONE) {
+        return {
+          transcript: {
+            id: 'tr-done',
+            interview_round_id: ROUND_DONE,
+            original_version_id: 't1',
+            current_draft_version_id: null,
+            current_confirmed_version_id: 'c1',
+            version: 2,
+            created_at: '2026-08-17T00:00:00Z',
+            updated_at: '2026-08-17T00:00:00Z',
+          },
+          versions: [],
+        }
+      }
+      return { transcript: null, versions: [] }
+    })
     const wrapper = await mountReady(['recruitment.manage', 'interview.execute'])
     const text = wrapper.text()
     expect(text).toContain('编辑')
@@ -384,11 +472,153 @@ describe('InterviewTimelineView', () => {
     expect(text).toContain('开始')
     expect(text).toContain('结束')
     expect(text).toContain('异常结束')
-    expect(text).toContain('确认完成')
+    expect(text).toContain('导入听记文本')
+    expect(text).toContain('无转写完成')
+    expect(text).not.toContain('确认完成')
+    expect(text).not.toContain('DOCX')
+    expect(text).not.toContain('AI评分')
+    expect(text).not.toContain('Offer')
     const done = wrapper.find(`[data-round-id="${ROUND_DONE}"]`)
+    expect(done.text()).toContain('查看确认版本')
+    expect(done.text()).toContain('版本历史')
+    expect(done.text()).toContain('再次校对')
     expect(done.text()).not.toContain('编辑')
     expect(wrapper.text()).not.toContain('保存并发送邀约')
-    expect(wrapper.text()).not.toContain('AI评分')
+  })
+
+  it('shows transcript workflow entry points by import/draft state', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          id: ROUND_PENDING,
+          name: '待转写-已导入',
+          sequence_no: 1,
+          status: 'PENDING_TRANSCRIPT',
+          allowed_actions: ['complete'],
+        }),
+        makeRound({
+          id: '99999999-9999-9999-9999-999999999999',
+          name: '待转写-有草稿',
+          sequence_no: 2,
+          status: 'PENDING_TRANSCRIPT',
+          allowed_actions: ['complete'],
+        }),
+      ]),
+    )
+    vi.mocked(interviewsApi.getRoundTranscripts).mockImplementation(async (roundId) => {
+      if (roundId === ROUND_PENDING) {
+        return {
+          transcript: {
+            id: 'tr-1',
+            interview_round_id: ROUND_PENDING,
+            original_version_id: 't1',
+            current_draft_version_id: null,
+            current_confirmed_version_id: null,
+            version: 1,
+            created_at: '2026-08-17T00:00:00Z',
+            updated_at: '2026-08-17T00:00:00Z',
+          },
+          versions: [],
+        }
+      }
+      return {
+        transcript: {
+          id: 'tr-2',
+          interview_round_id: '99999999-9999-9999-9999-999999999999',
+          original_version_id: 't1',
+          current_draft_version_id: 'd1',
+          current_confirmed_version_id: null,
+          version: 1,
+          created_at: '2026-08-17T00:00:00Z',
+          updated_at: '2026-08-17T00:00:00Z',
+        },
+        versions: [],
+      }
+    })
+    const wrapper = await mountReady(['recruitment.manage'])
+    const imported = wrapper.find(`[data-round-id="${ROUND_PENDING}"]`)
+    expect(imported.text()).toContain('开始校对')
+    expect(imported.text()).toContain('查看原始版本')
+    expect(imported.text()).not.toContain('导入听记文本')
+    const drafted = wrapper.find(
+      '[data-round-id="99999999-9999-9999-9999-999999999999"]',
+    )
+    expect(drafted.text()).toContain('继续校对')
+    expect(drafted.text()).toContain('确认校对')
+  })
+
+  it('shows interviewer confirmed transcript view only', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          id: ROUND_DONE,
+          status: 'COMPLETED',
+          allowed_actions: [],
+        }),
+      ]),
+    )
+    vi.mocked(interviewsApi.getRoundTranscripts).mockResolvedValue({
+      transcript: {
+        id: 'tr-1',
+        interview_round_id: ROUND_DONE,
+        original_version_id: 't1',
+        current_draft_version_id: null,
+        current_confirmed_version_id: 'c1',
+        version: 2,
+        created_at: '2026-08-17T00:00:00Z',
+        updated_at: '2026-08-17T00:00:00Z',
+      },
+      versions: [],
+    })
+    const wrapper = await mountReady(['interview.execute'])
+    expect(wrapper.text()).toContain('查看已确认转写')
+    expect(wrapper.text()).not.toContain('再次校对')
+    expect(wrapper.text()).not.toContain('导入听记文本')
+    expect(wrapper.text()).not.toContain('无转写完成')
+  })
+
+  it('opens without-transcript dialog using API reason codes and validates OTHER', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          id: ROUND_PENDING,
+          status: 'PENDING_TRANSCRIPT',
+          allowed_actions: ['complete'],
+        }),
+      ]),
+    )
+    vi.mocked(interviewsApi.completeWithoutTranscript).mockResolvedValue({
+      round_id: ROUND_PENDING,
+      status: 'COMPLETED',
+      version: 2,
+      transcript_completion_mode: 'WITHOUT_TRANSCRIPT',
+      transcript_completion_reason_code: 'OTHER',
+      transcript_completion_reason_description: '无法取得听记',
+      transcript_completed_by: 'user-hr',
+      transcript_completed_at: '2026-08-17T00:00:00Z',
+    })
+    const wrapper = await mountReady(['recruitment.manage'])
+    await wrapper.get('[data-test="complete-without-transcript"]').trigger('click')
+    await flushPromises()
+    expect(interviewsApi.getTranscriptReasonCodes).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('内容无法使用')
+    expect(wrapper.text()).toContain('其他')
+    await wrapper.get('[data-test="without-reason-code"]').setValue('OTHER')
+    await nextTick()
+    await wrapper.get('[data-test="submit-without-transcript"]').trigger('click')
+    await flushPromises()
+    expect(interviewsApi.completeWithoutTranscript).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="without-description"]').setValue('无法取得听记')
+    await wrapper.get('[data-test="submit-without-transcript"]').trigger('click')
+    await flushPromises()
+    expect(interviewsApi.completeWithoutTranscript).toHaveBeenCalledWith(
+      ROUND_PENDING,
+      expect.objectContaining({
+        reason_code: 'OTHER',
+        description: '无法取得听记',
+      }),
+    )
+    expect(interviewsApi.getInterviewTimeline).toHaveBeenCalledTimes(2)
   })
 
   it('hides management actions for interviewer-only allowed_actions', async () => {
@@ -487,22 +717,38 @@ describe('InterviewTimelineView', () => {
     expect(ElMessage.error).toHaveBeenCalled()
   })
 
-  it('does not show invite or AI scoring actions', async () => {
+  it('does not show system-send or AI scoring actions', async () => {
     const wrapper = await mountView(['recruitment.manage'])
     await nextTick()
     expect(wrapper.text()).not.toContain('发送邀约')
+    expect(wrapper.text()).not.toContain('系统发送')
+    expect(wrapper.text()).not.toContain('送达')
+    expect(wrapper.text()).not.toContain('SMTP')
     expect(wrapper.text()).not.toContain('AI 面试评分')
     expect(wrapper.text()).not.toContain('上传转写')
   })
 
-  it('shows confirmed actions from backend allowed_actions', async () => {
+  it('shows scheduled invitation actions from allowed_actions', async () => {
+    const wrapper = await mountReady(['recruitment.manage', 'interview.execute'])
+    const card = wrapper.get(`[data-round-id="${ROUND_SCHEDULED}"]`)
+    expect(card.find('[data-test="generate-invitation"]').exists()).toBe(true)
+    expect(card.find('[data-test="view-invitation"]').exists()).toBe(true)
+    expect(card.find('[data-test="confirm-invitation"]').exists()).toBe(true)
+    expect(card.text()).toContain('生成邀约邮件')
+    expect(card.text()).toContain('确认邀约完成')
+  })
+
+  it('shows confirmed invitation meta and view entry', async () => {
     vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
       makeTimeline([
         makeRound({
           id: ROUND_CONFIRMED,
           name: '已确认轮',
           status: 'CONFIRMED',
-          allowed_actions: ['edit', 'reschedule', 'cancel', 'start'],
+          allowed_actions: ['edit', 'reschedule', 'cancel', 'start', 'view_invitation'],
+          invitation_confirmed_at: '2026-08-14T03:00:00Z',
+          invitation_confirmed_by_name: '王磊',
+          invitation_confirmed_schedule_version: 1,
         }),
       ]),
     )
@@ -512,9 +758,119 @@ describe('InterviewTimelineView', () => {
     expect(card.text()).toContain('改期')
     expect(card.text()).toContain('取消')
     expect(card.text()).toContain('开始')
-    expect(card.text()).not.toContain('确认完成')
+    expect(card.find('[data-test="confirm-invitation"]').exists()).toBe(false)
+    expect(card.find('[data-test="view-invitation"]').exists()).toBe(true)
+    expect(card.get('[data-test="invitation-confirmed-meta"]').text()).toContain('王磊')
+    expect(card.get('[data-test="invitation-confirmed-meta"]').text()).toContain('确认安排版本 1')
   })
 
+  it('shows cancellation invitation entry for cancelled rounds', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          id: ROUND_CANCELLED,
+          name: '已取消',
+          status: 'CANCELLED',
+          allowed_actions: ['generate_cancellation', 'view_invitation'],
+        }),
+      ]),
+    )
+    const wrapper = await mountReady(['recruitment.manage'])
+    const card = wrapper.get(`[data-round-id="${ROUND_CANCELLED}"]`)
+    expect(card.text()).toContain('生成取消邮件')
+    expect(card.text()).toContain('查看取消通知记录')
+  })
+
+  it('shows reschedule invite hint after schedule version update', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          status: 'SCHEDULED',
+          current_schedule: {
+            id: 'sch-2',
+            schedule_version: 2,
+            status: 'ACTIVE',
+            start_at_utc: '2026-08-15T02:00:00Z',
+            end_at_utc: '2026-08-15T03:00:00Z',
+            timezone: 'Asia/Shanghai',
+            format: 'ONLINE',
+            meeting_mode: 'MANUAL',
+            meeting_url: 'https://meet.example.com/abc',
+            meeting_no: '123',
+            has_meeting_password: false,
+            location: null,
+            contact_name: null,
+            contact_phone_masked: null,
+            reschedule_reason: '冲突',
+            created_at: '2026-08-14T01:00:00Z',
+          },
+          invitation_confirmed_schedule_version: 1,
+        }),
+      ]),
+    )
+    const wrapper = await mountReady(['recruitment.manage'])
+    expect(wrapper.get('[data-test="reschedule-invite-hint"]').text()).toContain(
+      '原邀约内容已失效',
+    )
+  })
+
+  it('confirm invitation request carries schedule_version version and idempotency_key', async () => {
+    const invitationsApi = await import('../src/api/invitations')
+    vi.mocked(invitationsApi.confirmInvitation).mockResolvedValue({
+      round_id: ROUND_SCHEDULED,
+      status: 'CONFIRMED',
+      schedule_version: 1,
+      version: 2,
+      confirmed_at: '2026-08-14T04:00:00Z',
+      confirmed_by_name: 'HR',
+    })
+    vi.mocked(interviewsApi.getInterviewTimeline)
+      .mockResolvedValueOnce(makeTimeline())
+      .mockResolvedValueOnce(
+        makeTimeline([
+          makeRound({
+            status: 'CONFIRMED',
+            allowed_actions: ['view_invitation'],
+            invitation_confirmed_by_name: 'HR',
+            invitation_confirmed_schedule_version: 1,
+          }),
+        ]),
+      )
+    const wrapper = await mountReady(['recruitment.manage'])
+    await wrapper.get('[data-test="confirm-invitation"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="confirm-invitation-dialog"]').exists()).toBe(true)
+    await wrapper.get('[data-test="submit-confirm-invitation"]').trigger('click')
+    await flushPromises()
+    expect(invitationsApi.confirmInvitation).toHaveBeenCalledWith(
+      ROUND_SCHEDULED,
+      expect.objectContaining({
+        schedule_version: 1,
+        version: 1,
+        idempotency_key: expect.stringMatching(/\S+/),
+      }),
+    )
+  })
+
+  it('shows confirmed actions from backend allowed_actions', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          id: ROUND_CONFIRMED,
+          name: '已确认轮',
+          status: 'CONFIRMED',
+          allowed_actions: ['edit', 'reschedule', 'cancel', 'start', 'view_invitation'],
+        }),
+      ]),
+    )
+    const wrapper = await mountReady(['recruitment.manage', 'interview.execute'])
+    const card = wrapper.get(`[data-round-id="${ROUND_CONFIRMED}"]`)
+    expect(card.text()).toContain('编辑')
+    expect(card.text()).toContain('改期')
+    expect(card.text()).toContain('取消')
+    expect(card.text()).toContain('开始')
+    expect(card.find('[data-test="confirm-invitation"]').exists()).toBe(false)
+  })
   it('keeps completed cancelled and abnormal rounds read-only', async () => {
     vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
       makeTimeline([
@@ -691,5 +1047,32 @@ describe('InterviewTimelineView', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('刷新后重试')
     expect(wrapper.find('[data-test="refresh-conflict"]').exists()).toBe(true)
+  })
+
+  it('shows confirm send_summary field and no delivery wording', async () => {
+    const wrapper = await mountReady(['recruitment.manage'])
+    await wrapper.get('[data-test="confirm-invitation"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.get('[data-test="confirm-invitation-dialog"]')
+    expect(dialog.text()).toContain('发送概况')
+    expect(dialog.text()).toContain('不表示邮件送达')
+    expect(wrapper.find('[data-test="confirm-send-summary"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('系统发送成功')
+    expect(wrapper.text()).not.toContain('SMTP')
+    expect(wrapper.text()).not.toContain('失败重试')
+  })
+
+  it('hides invitation write actions for execute-only interviewer', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          allowed_actions: ['start', 'view_invitation'],
+        }),
+      ]),
+    )
+    const wrapper = await mountReady(['interview.execute'])
+    expect(wrapper.find('[data-test="generate-invitation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="confirm-invitation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="view-invitation"]').exists()).toBe(true)
   })
 })

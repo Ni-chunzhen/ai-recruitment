@@ -17,6 +17,7 @@ from app.models.interview import (
     INTERVIEW_FORMAT_OFFLINE,
     INTERVIEW_FORMAT_ONLINE,
     INTERVIEW_STATUS_COMPLETED,
+    INTERVIEW_STATUS_CONFIRMED,
     INTERVIEW_STATUS_DRAFT,
     INTERVIEW_STATUS_SCHEDULED,
     MEETING_MODE_ADAPTER,
@@ -373,7 +374,12 @@ async def _to_round_out(
         can_manage=can_manage,
         can_execute=can_execute and (can_manage or assigned),
     )
-    user_ids = [round_.owner_id, *[item.interviewer_id for item in round_.interviewers]]
+    user_ids = [
+        round_.owner_id,
+        *[item.interviewer_id for item in round_.interviewers],
+    ]
+    if round_.invitation_confirmed_by is not None:
+        user_ids.append(round_.invitation_confirmed_by)
     names = await _names_for_users(session, user_ids)
     current = None
     history: list[InterviewScheduleSummaryOut] = []
@@ -415,6 +421,15 @@ async def _to_round_out(
         started_at=round_.started_at,
         finished_at=round_.finished_at,
         cancelled_at=round_.cancelled_at,
+        invitation_confirmed_at=round_.invitation_confirmed_at,
+        invitation_confirmed_by=round_.invitation_confirmed_by,
+        invitation_confirmed_by_name=(
+            names.get(round_.invitation_confirmed_by)
+            if round_.invitation_confirmed_by
+            else None
+        ),
+        invitation_confirmed_schedule_version=round_.invitation_confirmed_schedule_version,
+        invitation_confirmation_summary=round_.invitation_confirmation_summary,
         created_at=round_.created_at,
         updated_at=round_.updated_at,
     )
@@ -901,7 +916,7 @@ async def reschedule_interview_round(
         return InterviewRoundActionOut.model_validate(
             (await _to_round_out(session, reused, actor=actor)).model_dump()
         )
-    if round_.status not in {INTERVIEW_STATUS_SCHEDULED, "CONFIRMED"}:
+    if round_.status not in {INTERVIEW_STATUS_SCHEDULED, INTERVIEW_STATUS_CONFIRMED}:
         raise InterviewStateError(
             "only SCHEDULED or CONFIRMED rounds can be rescheduled"
         )
@@ -928,7 +943,27 @@ async def reschedule_interview_round(
         round_id=round_.id,
     )
     now = _now()
+    status_before = round_.status
     old_version = active.schedule_version
+    from app.repositories.invitations import void_open_messages_for_schedule
+
+    voided = await void_open_messages_for_schedule(session, active.id)
+    if voided:
+        await record_audit(
+            session,
+            action="interview_invitation.void",
+            result="success",
+            resource_type="interview_schedule",
+            request_context=request_context,
+            actor_user_id=actor.id,
+            resource_id=str(active.id),
+            changes={
+                "schedule_id": str(active.id),
+                "schedule_version": old_version,
+                "voided_message_ids": [str(item.id) for item in voided],
+                "voided_count": len(voided),
+            },
+        )
     active.status = SCHEDULE_STATUS_SUPERSEDED
     active.superseded_at = now
     new_version = old_version + 1
@@ -942,6 +977,12 @@ async def reschedule_interview_round(
     )
     await add_schedule(session, schedule)
     round_.current_schedule_id = schedule.id
+    # Confirmation is per schedule_version; always return to SCHEDULED after reschedule.
+    round_.status = INTERVIEW_STATUS_SCHEDULED
+    round_.invitation_confirmed_at = None
+    round_.invitation_confirmed_by = None
+    round_.invitation_confirmed_schedule_version = None
+    round_.invitation_confirmation_summary = None
     _bump(round_, actor)
     await _store_idempotency(
         session,
@@ -962,8 +1003,11 @@ async def reschedule_interview_round(
         resource_id=str(round_.id),
         changes={
             "application_id": str(round_.application_id),
-            "before": {"schedule_version": old_version, "status": round_.status},
-            "after": {"schedule_version": new_version, "status": round_.status},
+            "before": {"schedule_version": old_version, "status": status_before},
+            "after": {
+                "schedule_version": new_version,
+                "status": INTERVIEW_STATUS_SCHEDULED,
+            },
             "reschedule_reason": payload.reschedule_reason,
             "idempotency_key": payload.idempotency_key,
         },
@@ -1170,35 +1214,11 @@ async def complete_interview_round(
     actor: User,
     request_context: RequestContext,
 ) -> InterviewRoundActionOut:
-    await _require_manage(actor)
-    application_status_before = None
-
-    async def _run() -> InterviewRoundActionOut:
-        nonlocal application_status_before
-        round_ = await get_round_for_update(session, round_id)
-        if round_ is None:
-            raise InterviewNotFoundError("interview round not found")
-        application = await _load_application(session, round_.application_id)
-        application_status_before = (application.pipeline_status, application.status)
-        result = await _status_action(
-            session,
-            round_id=round_id,
-            action="complete",
-            payload=payload,
-            actor=actor,
-            request_context=request_context,
-        )
-        application_after = await _load_application(session, round_.application_id)
-        if (
-            application_after.pipeline_status,
-            application_after.status,
-        ) != application_status_before:
-            raise InterviewValidationError(
-                "complete must not change application decision"
-            )
-        return result
-
-    return await _run()
+    """Generic complete is disabled; use transcript confirm or complete-without-transcript."""
+    del session, round_id, payload, actor, request_context
+    raise InterviewValidationError(
+        "completion must use confirm transcript or complete-without-transcript"
+    )
 
 
 async def end_interview_abnormally(

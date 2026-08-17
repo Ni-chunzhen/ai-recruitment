@@ -16,6 +16,7 @@ class InterviewStateError(Exception):
 
 _TRANSITIONS: dict[tuple[str, str], str] = {
     ("schedule", INTERVIEW_STATUS_DRAFT): INTERVIEW_STATUS_SCHEDULED,
+    ("confirm_invitation", INTERVIEW_STATUS_SCHEDULED): INTERVIEW_STATUS_CONFIRMED,
     ("start", INTERVIEW_STATUS_SCHEDULED): INTERVIEW_STATUS_IN_PROGRESS,
     ("start", INTERVIEW_STATUS_CONFIRMED): INTERVIEW_STATUS_IN_PROGRESS,
     ("finish", INTERVIEW_STATUS_IN_PROGRESS): INTERVIEW_STATUS_PENDING_TRANSCRIPT,
@@ -29,19 +30,42 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
 
 _ACTIONS_BY_STATUS: dict[str, tuple[str, ...]] = {
     INTERVIEW_STATUS_DRAFT: ("edit", "schedule", "cancel"),
-    INTERVIEW_STATUS_SCHEDULED: ("edit", "reschedule", "cancel", "start"),
-    INTERVIEW_STATUS_CONFIRMED: ("edit", "reschedule", "cancel", "start"),
+    INTERVIEW_STATUS_SCHEDULED: (
+        "edit",
+        "reschedule",
+        "cancel",
+        "start",
+        "generate_invitation",
+        "view_invitation",
+        "confirm_invitation",
+    ),
+    INTERVIEW_STATUS_CONFIRMED: (
+        "edit",
+        "reschedule",
+        "cancel",
+        "start",
+        "view_invitation",
+    ),
     INTERVIEW_STATUS_IN_PROGRESS: ("finish", "end_abnormally"),
     INTERVIEW_STATUS_PENDING_TRANSCRIPT: ("complete",),
     INTERVIEW_STATUS_COMPLETED: (),
-    INTERVIEW_STATUS_CANCELLED: (),
+    INTERVIEW_STATUS_CANCELLED: ("generate_cancellation", "view_invitation"),
     INTERVIEW_STATUS_ENDED_ABNORMALLY: (),
 }
 
 MANAGE_ONLY_ACTIONS = frozenset(
-    {"edit", "schedule", "reschedule", "cancel", "complete"}
+    {
+        "edit",
+        "schedule",
+        "reschedule",
+        "cancel",
+        "complete",
+        "generate_invitation",
+        "confirm_invitation",
+        "generate_cancellation",
+    }
 )
-EXECUTE_ACTIONS = frozenset({"start", "finish", "end_abnormally"})
+EXECUTE_ACTIONS = frozenset({"start", "finish", "end_abnormally", "view_invitation"})
 
 
 def assert_transition(current: str, target: str, action: str) -> None:

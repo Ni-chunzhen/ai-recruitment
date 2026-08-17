@@ -476,6 +476,10 @@ def _patch_round_flow(
             )
         ),
     )
+    monkeypatch.setattr(
+        "app.repositories.invitations.void_open_messages_for_schedule",
+        AsyncMock(return_value=[]),
+    )
     session = AsyncMock()
     return (
         session,
@@ -514,6 +518,57 @@ async def test_schedule_enters_scheduled_not_confirmed(
     blob = str(audits[0]["changes"])
     assert "secret-meet" not in blob
     assert "meeting_password" not in blob
+
+
+@pytest.mark.asyncio
+async def test_confirmed_reschedule_returns_to_scheduled_and_clears_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.interview import INTERVIEW_STATUS_CONFIRMED
+
+    round_ = _make_round(status=INTERVIEW_STATUS_CONFIRMED)
+    round_.invitation_confirmed_at = _now_utc()
+    round_.invitation_confirmed_by = uuid4()
+    round_.invitation_confirmed_schedule_version = 1
+    round_.invitation_confirmation_summary = "已人工发送"
+    old = _active_schedule(round_, version=1)
+    session, _app, audits, added, _keys, _calls = _patch_round_flow(
+        monkeypatch, round_
+    )
+    voided_msgs = [SimpleNamespace(id=uuid4())]
+    monkeypatch.setattr(
+        "app.repositories.invitations.void_open_messages_for_schedule",
+        AsyncMock(return_value=voided_msgs),
+    )
+    start = _now_utc() + timedelta(hours=5)
+    await reschedule_interview_round(
+        session,
+        round_id=round_.id,
+        payload=InterviewRescheduleRequest.model_validate(
+            {
+                "start_at_utc": start.isoformat(),
+                "end_at_utc": (start + timedelta(hours=1)).isoformat(),
+                "timezone": "Asia/Shanghai",
+                "format": "ONLINE",
+                "meeting_mode": "MANUAL",
+                "meeting_url": "https://meet.example.com/re",
+                "reschedule_reason": "确认后改期",
+                "version": 1,
+                "idempotency_key": "re-confirmed",
+            }
+        ),
+        actor=_actor(),
+        request_context=_ctx(),
+    )
+    assert round_.status == INTERVIEW_STATUS_SCHEDULED
+    assert round_.invitation_confirmed_at is None
+    assert round_.invitation_confirmed_by is None
+    assert round_.invitation_confirmed_schedule_version is None
+    assert round_.invitation_confirmation_summary is None
+    assert old.status == SCHEDULE_STATUS_SUPERSEDED
+    assert added[0].schedule_version == 2
+    assert any(item["action"] == "interview_invitation.void" for item in audits)
+    assert any(item["action"] == "interview_round.reschedule" for item in audits)
 
 
 @pytest.mark.asyncio
@@ -732,7 +787,7 @@ async def test_cancel_keeps_schedule_history_and_other_description(
 
 
 @pytest.mark.asyncio
-async def test_complete_does_not_change_application_decision(
+async def test_generic_complete_is_rejected_for_transcript_workflow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     round_ = _make_round(status=INTERVIEW_STATUS_PENDING_TRANSCRIPT)
@@ -741,16 +796,20 @@ async def test_complete_does_not_change_application_decision(
     session, _app, _audits, _added, _keys, _calls = _patch_round_flow(
         monkeypatch, round_, application=application
     )
-    result = await complete_interview_round(
-        session,
-        round_id=round_.id,
-        payload=InterviewRoundActionRequest.model_validate(
-            {"version": 1, "idempotency_key": "done-1"}
-        ),
-        actor=_actor(),
-        request_context=_ctx(),
-    )
-    assert result.status == INTERVIEW_STATUS_COMPLETED
+    with pytest.raises(
+        InterviewValidationError,
+        match="confirm transcript or complete-without-transcript",
+    ):
+        await complete_interview_round(
+            session,
+            round_id=round_.id,
+            payload=InterviewRoundActionRequest.model_validate(
+                {"version": 1, "idempotency_key": "done-1"}
+            ),
+            actor=_actor(),
+            request_context=_ctx(),
+        )
+    assert round_.status == INTERVIEW_STATUS_PENDING_TRANSCRIPT
     assert application.pipeline_status == PIPELINE_INTERVIEWING
     assert application.status == APPLICATION_STATUS_IN_PROGRESS
 

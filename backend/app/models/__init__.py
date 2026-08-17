@@ -83,6 +83,51 @@ from app.models.interview import (  # noqa: F401
     InterviewRoundInterviewer,
     InterviewSchedule,
 )
+from app.models.interview_transcript import (  # noqa: F401
+    InterviewTranscript,
+    InterviewTranscriptSegment,
+    InterviewTranscriptVersion,
+    TranscriptCompletionMode,
+    TranscriptSegmentSource,
+    TranscriptSourceMethod,
+    TranscriptSpeakerRole,
+    TranscriptVersionStatus,
+    TranscriptVersionType,
+    list_transcript_reason_catalog,
+)
+from app.models.invitation import (  # noqa: F401
+    CHANNEL_CORPORATE_EMAIL,
+    CHANNEL_OTHER,
+    CHANNEL_TYPES,
+    CHANNEL_WORK_EMAIL,
+    COPY_TYPE_FULL_TEXT,
+    COPY_TYPE_HTML_BODY,
+    COPY_TYPE_SUBJECT,
+    COPY_TYPES,
+    INVITATION_AUDIENCE_CANDIDATE,
+    INVITATION_AUDIENCE_INTERVIEWER,
+    INVITATION_AUDIENCES,
+    INVITATION_EVENT_CANCELLATION,
+    INVITATION_EVENT_INITIAL,
+    INVITATION_EVENT_RESCHEDULE,
+    INVITATION_EVENTS,
+    INVITATION_STATUS_DRAFT,
+    INVITATION_STATUS_READY,
+    INVITATION_STATUS_RECORDED_SENT,
+    INVITATION_STATUS_VOIDED,
+    INVITATION_STATUSES,
+    TEMPLATE_CANDIDATE_CANCELLATION,
+    TEMPLATE_CANDIDATE_INITIAL,
+    TEMPLATE_CANDIDATE_RESCHEDULE,
+    TEMPLATE_CODES,
+    TEMPLATE_INTERVIEWER_CANCELLATION,
+    TEMPLATE_INTERVIEWER_INITIAL,
+    TEMPLATE_INTERVIEWER_RESCHEDULE,
+    TEMPLATE_VERSION,
+    InterviewInvitationMessage,
+    InterviewInvitationSendRecord,
+    InterviewInvitationVersion,
+)
 from app.models.job import (  # noqa: F401
     JOB_STATUS_CLOSED,
     JOB_STATUS_DRAFT,
@@ -173,6 +218,14 @@ SENSITIVE_AUDIT_KEYS = frozenset(
         "meeting_password",
         "meeting_password_encrypted",
         "contact_phone",
+        "subject",
+        "body_html",
+        "body_text",
+        "subject_encrypted",
+        "body_html_encrypted",
+        "body_text_encrypted",
+        "recipient_email",
+        "email",
     }
 )
 
@@ -205,6 +258,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True)
     username_normalized: Mapped[str] = mapped_column(String(64), unique=True)
     display_name: Mapped[str] = mapped_column(String(128))
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)

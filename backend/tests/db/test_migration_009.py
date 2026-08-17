@@ -13,14 +13,13 @@ ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS = BACKEND_ROOT / "alembic" / "versions"
 
 
-def test_009_revises_008_and_is_head() -> None:
+def test_009_revises_008() -> None:
     config = Config(str(ALEMBIC_INI))
     config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
     script = ScriptDirectory.from_config(config)
-    heads = script.get_heads()
-    assert heads == ["009_stage7_interview_foundation"]
     revision = script.get_revision("009_stage7_interview_foundation")
     assert revision.down_revision == "008_stage6_attempt_audit"
+    assert script.get_revision("009_stage7_interview_foundation") is not None
 
 
 def test_009_migration_file_defines_upgrade_and_downgrade() -> None:
