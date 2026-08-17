@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -21,12 +22,16 @@ TASK_TYPE_JD_PARSE = "JD_PARSE"
 TASK_TYPE_SCORE_DIMENSION_RECOMMEND = "SCORE_DIMENSION_RECOMMEND"
 TASK_TYPE_RESUME_PARSE = "RESUME_PARSE"
 TASK_TYPE_RESUME_SCORE = "RESUME_SCORE"
+TASK_TYPE_INTERVIEW_QUESTION_GENERATE = "INTERVIEW_QUESTION_GENERATE"
+TASK_TYPE_INTERVIEW_ROUND_ANALYZE = "INTERVIEW_ROUND_ANALYZE"
 TASK_TYPES = frozenset(
     {
         TASK_TYPE_JD_PARSE,
         TASK_TYPE_SCORE_DIMENSION_RECOMMEND,
         TASK_TYPE_RESUME_PARSE,
         TASK_TYPE_RESUME_SCORE,
+        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     }
 )
 
@@ -56,6 +61,15 @@ ERROR_CATEGORY_NON_RETRYABLE = "non_retryable"
 BUSINESS_TYPE_JOB = "job"
 BUSINESS_TYPE_RESUME_VERSION = "resume_version"
 BUSINESS_TYPE_APPLICATION = "application"
+BUSINESS_TYPE_INTERVIEW_ROUND = "interview_round"
+BUSINESS_TYPES = frozenset(
+    {
+        BUSINESS_TYPE_JOB,
+        BUSINESS_TYPE_RESUME_VERSION,
+        BUSINESS_TYPE_APPLICATION,
+        BUSINESS_TYPE_INTERVIEW_ROUND,
+    }
+)
 
 # 1 次初始执行 + 最多 2 次自动重试
 AI_TASK_MAX_ATTEMPTS = 3
@@ -74,6 +88,17 @@ class AITask(Base):
             "idempotency_key",
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "task_type IN ("
+            "'JD_PARSE', "
+            "'SCORE_DIMENSION_RECOMMEND', "
+            "'RESUME_PARSE', "
+            "'RESUME_SCORE', "
+            "'INTERVIEW_QUESTION_GENERATE', "
+            "'INTERVIEW_ROUND_ANALYZE'"
+            ")",
+            name="ck_ai_tasks_task_type",
         ),
     )
 
@@ -177,6 +202,12 @@ class AITaskAttempt(Base):
     raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     response_purged_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    sensitive_request_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    sensitive_response_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

@@ -18,13 +18,16 @@ SENSITIVE_VALUE_MARKERS = (
     "authorization",
     "cookie",
     "secret",
+    "api_key",
+    "bearer",
+    "enc:v1:",
 )
 
 
 def _scrub_value(value: object) -> object:
     if isinstance(value, dict):
         return {key: _scrub_value(item) for key, item in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_scrub_value(item) for item in value]
     if isinstance(value, str):
         lowered = value.lower()

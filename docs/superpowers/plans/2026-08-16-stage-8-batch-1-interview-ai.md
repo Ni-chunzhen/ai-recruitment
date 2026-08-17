@@ -56,7 +56,9 @@
 
 - [ ] 写失败测试：`tests/models/test_interview_ai_models.py`（表名/列/关系）
 - [ ] 运行确认失败
-- [ ] 最小 ORM：七表映射；`TASK_TYPE_*`、`BUSINESS_TYPE_INTERVIEW_ROUND`；扩展 `SENSITIVE_AUDIT_KEYS` / markers
+- [ ] 最小 ORM：七表映射；`TASK_TYPE_*`、`BUSINESS_TYPE_INTERVIEW_ROUND`
+- [ ] 审计职责分离：`SENSITIVE_AUDIT_KEYS` 精确键名递归拒绝正文/密文键；`SENSITIVE_VALUE_MARKERS` 仅扫描 password/token/authorization/cookie/secret/api_key/bearer/`enc:v1:` 等明确凭据或密文值，不以 question/quote/analysis/encrypted 等业务词误伤 ID、事件、计数和状态
+- [ ] 锁定题纲版本删除语义：循环 FK `SET NULL` 允许 DRAFT current version 被数据库直接删除后置空；READY 的 `ck_interview_question_sets_ready_requires_confirm` 拒绝删除 current version；正常 service 不提供删除单版动作，ARCHIVED 历史版本不由普通 API 删除；downgrade 先 drop 循环 FK，故不受该业务 Check 删除路径影响
 - [ ] 运行确认通过
 
 ---
@@ -80,7 +82,7 @@
 
 - [ ] 写失败测试：`tests/services/test_interview_questions.py`（缺简历拒绝、冻结 job_version、MANUAL_EDIT 继承、source/ai_task Check 语义、409、404）
 - [ ] 运行确认失败
-- [ ] 最小实现生成/编辑/确认；snapshot 仅引用；入队 `INTERVIEW_QUESTION_GENERATE`
+- [ ] 最小实现生成/编辑/确认；不提供题纲版本删除动作；snapshot 仅引用；入队 `INTERVIEW_QUESTION_GENERATE`
 - [ ] 运行确认通过
 
 ---

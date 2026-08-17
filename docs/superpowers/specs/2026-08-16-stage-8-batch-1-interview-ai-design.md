@@ -114,7 +114,11 @@ Worker 仅按 snapshot 中钉死的 FK/ID 加载不可变 `JobVersion` / 确认 
 
 ### 5.5 审计
 
-扩展 `SENSITIVE_AUDIT_KEYS` 与 `SENSITIVE_VALUE_MARKERS`：至少含 `question`、`purpose`、`quote`、`overall_summary`、`analysis`、`strengths`、`risks`、`follow_up`、`resume_text`、`jd_content`、`segment_text`、`raw_output`、`raw_response`、`raw_request`、`*_encrypted`。禁止审计正文或密文。
+审计防护按职责分离：
+
+- key 级：`SENSITIVE_AUDIT_KEYS` 以精确键名拒绝 `question`、`purpose`、`resume_evidence`、`follow_up_prompts`、`risk_flags`、`overall_summary`、`analysis`、`strengths`、`risks`、`insufficient_information`、`suggested_follow_ups`、`quote`、`raw_request`、`raw_response`、`result_payload`、`sensitive_request` / `sensitive_response`、正文键及所有已知 `*_encrypted` 键；递归检查 dict、list 与 tuple。
+- value 级：`SENSITIVE_VALUE_MARKERS` 只清除值中明确的凭据或项目密文标记，如 `password`、`token`、`authorization`、`cookie`、`secret`、`api_key`、`bearer`、`enc:v1:`；不得以 `question`、`quote`、`analysis`、`encrypted` 等业务语义词猜测敏感正文。
+- 调用方：只传 ID、版本、计数、状态和错误码，禁止先把正文传入审计再依赖 value scrub 遮盖。
 
 ## 6. 七表及基础设施最终迁移范围
 
@@ -128,7 +132,7 @@ Worker 仅按 snapshot 中钉死的 FK/ID 加载不可变 `JobVersion` / 确认 
 READY ⇒ `current_version_id`、`confirmed_by`、`confirmed_at` 均非空。  
 READY 后再编辑：服务改回 DRAFT、清确认字段、写新 `MANUAL_EDIT` 版本。
 
-删除策略：不提供删除单个 version 的业务 API；删 set（随 round CASCADE）删除全部 versions/items。若 DB 层单独 DELETE 某 version：循环 FK 将 `current_version_id` SET NULL；`ai_task_id` RESTRICT 阻止先删被引用 task。
+删除策略：正常 service 不提供删除单个题纲 version 的动作，ARCHIVED 历史版本也不由普通 API 删除；删 set（随 round CASCADE）删除全部 versions/items。循环 FK 的 `ON DELETE SET NULL` 是数据库层行为：`DRAFT + current_version_id` 可在直接删除该 version 后将指针置空；`READY + current_version_id + confirmed_by/at` 直接删除 current version 时，SET NULL 形成的中间结果违反 `ck_interview_question_sets_ready_requires_confirm`，因此整条 DELETE 被数据库拒绝。013 downgrade 会先删除循环 FK，再按子表到父表删除，不经过这条业务 Check 所阻止的单版删除路径。`ai_task_id` RESTRICT 仍阻止先删被引用 task。
 
 ### 6.2 `interview_question_versions`
 

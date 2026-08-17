@@ -742,7 +742,24 @@ async def _assert_question_set_status_rules(
         qset_id,
     )
     # Note: DB cannot alone guarantee current_version belongs to same set — service must.
-    # Deleting current version: CASCADE is from set→versions; deleting version alone SET NULLs pointer.
+    # READY cannot lose its current version: SET NULL fires, then the READY Check rejects
+    # the resulting illegal row. Normal services do not delete individual versions.
+    with pytest.raises(asyncpg.CheckViolationError) as exc_info:
+        await conn.execute("DELETE FROM interview_question_versions WHERE id = $1", qver)
+    assert (
+        exc_info.value.constraint_name
+        == "ck_interview_question_sets_ready_requires_confirm"
+    )
+    assert (
+        await conn.fetchval(
+            "SELECT current_version_id FROM interview_question_sets WHERE id = $1",
+            qset_id,
+        )
+        == qver
+    )
+
+    # DRAFT may have a current pointer; deleting that version applies FK SET NULL.
+    # ARCHIVED history is likewise not deleted through the normal API.
     await conn.execute(
         "UPDATE interview_question_sets SET status = 'DRAFT', confirmed_by = NULL, confirmed_at = NULL WHERE id = $1",
         qset_id,

@@ -28,10 +28,14 @@ from app.models.ai_task import (  # noqa: F401
     AI_TASK_STATUS_SUCCEEDED,
     AI_TASK_STATUSES,
     BUSINESS_TYPE_APPLICATION,
+    BUSINESS_TYPE_INTERVIEW_ROUND,
     BUSINESS_TYPE_JOB,
     BUSINESS_TYPE_RESUME_VERSION,
+    BUSINESS_TYPES,
     ERROR_CATEGORY_NON_RETRYABLE,
     ERROR_CATEGORY_RETRYABLE,
+    TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+    TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_JD_PARSE,
     TASK_TYPE_RESUME_PARSE,
     TASK_TYPE_RESUME_SCORE,
@@ -94,6 +98,15 @@ from app.models.interview_transcript import (  # noqa: F401
     TranscriptVersionStatus,
     TranscriptVersionType,
     list_transcript_reason_catalog,
+)
+from app.models.interview_ai import (  # noqa: F401
+    InterviewQuestionItem,
+    InterviewQuestionSet,
+    InterviewQuestionVersion,
+    InterviewRoundAnalysis,
+    InterviewRoundAnalysisDimension,
+    InterviewRoundAnalysisEvidence,
+    InterviewRoundAnalysisVersion,
 )
 from app.models.invitation import (  # noqa: F401
     CHANNEL_CORPORATE_EMAIL,
@@ -226,6 +239,39 @@ SENSITIVE_AUDIT_KEYS = frozenset(
         "body_text_encrypted",
         "recipient_email",
         "email",
+        "question",
+        "purpose",
+        "resume_evidence",
+        "follow_up_prompts",
+        "risk_flags",
+        "overall_summary",
+        "analysis",
+        "strengths",
+        "risks",
+        "insufficient_information",
+        "suggested_follow_ups",
+        "quote",
+        "sensitive_request",
+        "sensitive_response",
+        "raw_request",
+        "raw_response",
+        "result_payload",
+        "transcript_text",
+        "segment_text",
+        "question_encrypted",
+        "purpose_encrypted",
+        "resume_evidence_encrypted",
+        "follow_up_prompts_encrypted",
+        "risk_flags_encrypted",
+        "overall_summary_encrypted",
+        "analysis_encrypted",
+        "strengths_encrypted",
+        "risks_encrypted",
+        "insufficient_information_encrypted",
+        "suggested_follow_ups_encrypted",
+        "quote_encrypted",
+        "sensitive_request_encrypted",
+        "sensitive_response_encrypted",
     }
 )
 
@@ -234,18 +280,25 @@ def normalize_username(username: str) -> str:
     return username.strip().lower()
 
 
+def _sanitize_audit_value(value: object) -> object:
+    if isinstance(value, dict):
+        sanitized: dict = {}
+        for key, item in value.items():
+            if isinstance(key, str) and key.lower() in SENSITIVE_AUDIT_KEYS:
+                raise ValueError(f"sensitive key not allowed in audit changes: {key}")
+            sanitized[key] = _sanitize_audit_value(item)
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_audit_value(item) for item in value]
+    return value
+
+
 def sanitize_audit_changes(changes: dict | None) -> dict | None:
     if changes is None:
         return None
 
-    sanitized: dict = {}
-    for key, value in changes.items():
-        if key.lower() in SENSITIVE_AUDIT_KEYS:
-            raise ValueError(f"sensitive key not allowed in audit changes: {key}")
-        if isinstance(value, dict):
-            sanitized[key] = sanitize_audit_changes(value)
-        else:
-            sanitized[key] = value
+    sanitized = _sanitize_audit_value(changes)
+    assert isinstance(sanitized, dict)
     return sanitized
 
 
