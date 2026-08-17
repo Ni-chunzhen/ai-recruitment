@@ -3,18 +3,27 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.models.ai_task import (
     AI_TASK_MAX_ATTEMPTS,
     AI_TASK_RETRY_COUNTDOWNS,
     ERROR_CATEGORY_NON_RETRYABLE,
     ERROR_CATEGORY_RETRYABLE,
+    TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+    TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_JD_PARSE,
     TASK_TYPE_RESUME_PARSE,
     TASK_TYPE_RESUME_SCORE,
     TASK_TYPE_SCORE_DIMENSION_RECOMMEND,
 )
 from app.schemas.ai_task import JdParseResult, ScoreDimensionRecommendResult
+from app.schemas.interview_ai import (
+    InterviewQuestionGenerateResult,
+    InterviewRoundAnalyzeResult,
+)
 from app.schemas.resume import ResumeParseResult, ResumeScoreResult
+from app.services.interview_ai_validation import raise_safe_validation_error
 
 
 @dataclass
@@ -44,6 +53,17 @@ def validate_ai_result(task_type: str, payload: object) -> dict[str, Any]:
         return ResumeParseResult.model_validate(payload).model_dump()
     if task_type == TASK_TYPE_RESUME_SCORE:
         return ResumeScoreResult.model_validate(payload).model_dump()
+    try:
+        if task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+            return InterviewQuestionGenerateResult.model_validate(payload).model_dump(
+                mode="json"
+            )
+        if task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
+            return InterviewRoundAnalyzeResult.model_validate(payload).model_dump(
+                mode="json"
+            )
+    except ValidationError as exc:
+        raise_safe_validation_error(exc)
     raise ValueError(f"unsupported task_type: {task_type}")
 
 

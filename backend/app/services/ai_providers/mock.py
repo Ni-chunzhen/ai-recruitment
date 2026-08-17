@@ -4,6 +4,8 @@ import re
 from typing import Any
 
 from app.models.ai_task import (
+    TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+    TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_JD_PARSE,
     TASK_TYPE_RESUME_PARSE,
     TASK_TYPE_RESUME_SCORE,
@@ -191,6 +193,48 @@ def mock_resume_score(input_snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def mock_interview_question_generate() -> dict[str, Any]:
+    return {
+        "questions": [
+            {
+                "dimension_key": "D001",
+                "question": "请描述一次跨团队冲突处理。",
+                "purpose": "考察协作与冲突处理。",
+                "evidence_source": "JOB_REQUIREMENT",
+                "resume_evidence": None,
+                "follow_up_prompts": ["对方立场是什么？"],
+                "risk_flags": ["可能回避责任"],
+                "display_order": 1,
+            }
+        ]
+    }
+
+
+def mock_interview_round_analyze() -> dict[str, Any]:
+    return {
+        "dimensions": [
+            {
+                "dimension_key": "D001",
+                "score": 4,
+                "evidence": [
+                    {
+                        "segment_id": "11111111-1111-1111-1111-111111111111",
+                        "segment_no": 1,
+                        "quote": "我当时先对齐目标。",
+                    }
+                ],
+                "analysis": "候选人能描述冲突处理路径。",
+                "strengths": ["目标对齐"],
+                "risks": ["细节偏少"],
+                "insufficient_information": None,
+                "suggested_follow_ups": ["请补充具体结果"],
+            }
+        ],
+        "overall_summary": "整体表现稳定，建议深入追问结果指标。",
+        "model_reported_overall_score": "4.00",
+    }
+
+
 async def run_mock(
     *,
     task_type: str,
@@ -223,6 +267,10 @@ async def run_mock(
             result = validate_ai_result(task_type, mock_resume_parse(input_snapshot))
         elif task_type == TASK_TYPE_RESUME_SCORE:
             result = validate_ai_result(task_type, mock_resume_score(input_snapshot))
+        elif task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+            result = validate_ai_result(task_type, mock_interview_question_generate())
+        elif task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
+            result = validate_ai_result(task_type, mock_interview_round_analyze())
         else:
             return ProviderOutcome(
                 ok=False,

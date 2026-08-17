@@ -66,12 +66,12 @@
 ## Task 3 — 契约与纯函数
 
 **Consumes**：规格 §3/§5/§7。  
-**Produces**：`schemas/interview_ai.py`；`services/interview_dimensions.py`（含 `allocate_dimension_key`、`build_dimension_snapshot`）；面试加权函数；扩展 `validate_ai_result`；mock 夹具
+**Produces**：`schemas/interview_ai.py`；`services/interview_ai_validation.py`（含 `allocate_dimension_key`、`build_dimension_snapshot`）；面试加权函数；扩展 `validate_ai_result`；mock 夹具
 
-- [ ] 写失败测试：`tests/services/test_interview_ai_contracts.py`
-- [ ] 运行确认失败
-- [ ] 最小实现契约校验、证据规范化、overall 公式、anchors=5 规则
-- [ ] 运行确认通过（无网络）
+- [x] 写失败测试：`tests/services/test_interview_ai_contracts.py`、`tests/services/test_interview_ai_validation.py`
+- [x] 运行确认失败
+- [x] 最小实现契约校验、证据规范化、overall 公式、anchors=5 规则；`validate_ai_result` 仅做 schema 解析，snapshot/segment 对照由 validation service 负责
+- [x] 运行确认通过（无网络）
 
 ---
 
