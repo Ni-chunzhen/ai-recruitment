@@ -1462,6 +1462,94 @@ async def test_persist_same_task_is_idempotent(
     assert generated == audits_after_first
 
 
+@pytest.mark.asyncio
+async def test_persist_null_actor_with_context_writes_generated_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.interview_questions import (
+        persist_question_generation_result,
+        request_question_generation,
+    )
+
+    round_ = _make_round()
+    env = _patch_base(monkeypatch, round_)
+    actor = _actor()
+    task = await request_question_generation(
+        env.session,
+        round_id=round_.id,
+        idempotency_key="persist-null-actor",
+        actor=actor,
+        request_context=_ctx(),
+    )
+    version = await persist_question_generation_result(
+        env.session,
+        task_id=task.id,
+        payload=_questions_payload(),
+        actor=None,
+        request_context=_ctx(),
+    )
+    assert version.version_no == 1
+    generated = [
+        entry for entry in env.audits if entry["action"] == "interview_question.generated"
+    ]
+    assert len(generated) == 1
+    assert generated[0]["actor_user_id"] is None
+    assert generated[0]["resource_id"] == str(round_.id)
+    _assert_safe_audit(generated[0])
+    blob = json.dumps(generated, ensure_ascii=False, default=str)
+    assert CIPHER_PREFIX not in blob
+    assert "请说明" not in blob
+    changes = generated[0]["changes"]
+    for forbidden in (
+        "question",
+        "purpose",
+        "resume_evidence",
+        "raw_request",
+        "raw_response",
+        "result_payload",
+        "jd_text",
+        "resume_text",
+    ):
+        assert forbidden not in changes
+    assert changes["round_id"] == str(round_.id)
+    assert changes["ai_task_id"] == str(task.id)
+    assert "version_no" in changes
+    assert "question_count" in changes
+
+
+@pytest.mark.asyncio
+async def test_persist_without_request_context_skips_generated_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.interview_questions import (
+        persist_question_generation_result,
+        request_question_generation,
+    )
+
+    round_ = _make_round()
+    env = _patch_base(monkeypatch, round_)
+    actor = _actor()
+    task = await request_question_generation(
+        env.session,
+        round_id=round_.id,
+        idempotency_key="persist-no-ctx",
+        actor=actor,
+        request_context=_ctx(),
+    )
+    version = await persist_question_generation_result(
+        env.session,
+        task_id=task.id,
+        payload=_questions_payload(),
+        actor=actor,
+        request_context=None,
+    )
+    assert version.version_no == 1
+    generated = [
+        entry for entry in env.audits if entry["action"] == "interview_question.generated"
+    ]
+    assert generated == []
+
+
 # ---------------------------------------------------------------------------
 # E. 编辑题纲
 # ---------------------------------------------------------------------------

@@ -1513,6 +1513,60 @@ async def test_persist_creates_a1_in_snapshot_order(
 
 
 @pytest.mark.asyncio
+async def test_persist_null_actor_with_context_writes_generated_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.interview_analyses import (
+        persist_analysis_generation_result,
+        request_analysis_generation,
+    )
+
+    round_ = _make_round()
+    env = _patch_base(monkeypatch, round_)
+    actor = _actor()
+    task = await request_analysis_generation(
+        env.session,
+        round_id=round_.id,
+        idempotency_key="null-actor",
+        actor=actor,
+        request_context=_ctx(),
+    )
+    c1 = env.transcript_versions[0]
+    version = await persist_analysis_generation_result(
+        env.session,
+        task_id=task.id,
+        payload=_analysis_payload(segment=c1.segments[0]),
+        actor=None,
+        request_context=_ctx(),
+    )
+    assert version.version_no == 1
+    generated = [
+        item for item in env.audits if item["action"] == "interview_analysis.generated"
+    ]
+    assert len(generated) == 1
+    assert generated[0]["actor_user_id"] is None
+    assert generated[0]["resource_id"] == str(round_.id)
+    _assert_safe_audit(generated[0])
+    blob = json.dumps(generated, ensure_ascii=False, default=str)
+    assert CIPHER_PREFIX not in blob
+    changes = generated[0]["changes"]
+    for forbidden in (
+        "quote",
+        "analysis",
+        "overall_summary",
+        "raw_request",
+        "raw_response",
+        "result_payload",
+    ):
+        assert forbidden not in changes
+    assert changes["round_id"] == str(round_.id)
+    assert changes["task_id"] == str(task.id)
+    assert "dimension_count" in changes
+    assert "evidence_count" in changes
+    assert "overall_score" in changes
+
+
+@pytest.mark.asyncio
 async def test_persist_a2_and_idempotent_task_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

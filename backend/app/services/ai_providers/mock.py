@@ -193,43 +193,78 @@ def mock_resume_score(input_snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def mock_interview_question_generate() -> dict[str, Any]:
-    return {
-        "questions": [
+def _snapshot_dimensions(input_snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+    dims = [
+        item
+        for item in ((input_snapshot or {}).get("dimensions") or [])
+        if isinstance(item, dict) and str(item.get("dimension_key") or "").strip()
+    ]
+    return dims or [{"dimension_key": "D001"}]
+
+
+def mock_interview_question_generate(
+    input_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    questions = []
+    for index, item in enumerate(_snapshot_dimensions(input_snapshot), start=1):
+        key = str(item["dimension_key"]).strip()
+        questions.append(
             {
-                "dimension_key": "D001",
-                "question": "请描述一次跨团队冲突处理。",
-                "purpose": "考察协作与冲突处理。",
+                "dimension_key": key,
+                "question": f"请结合维度{key}描述一次具体实践。",
+                "purpose": f"考察{key}",
                 "evidence_source": "JOB_REQUIREMENT",
                 "resume_evidence": None,
-                "follow_up_prompts": ["对方立场是什么？"],
-                "risk_flags": ["可能回避责任"],
-                "display_order": 1,
+                "follow_up_prompts": ["请补充可量化结果。"],
+                "risk_flags": ["可能缺少细节"],
+                "display_order": index,
             }
-        ]
-    }
+        )
+    return {"questions": questions}
 
 
-def mock_interview_round_analyze() -> dict[str, Any]:
-    return {
-        "dimensions": [
+def mock_interview_round_analyze(
+    input_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    snap = input_snapshot or {}
+    segments = [item for item in (snap.get("segments") or []) if isinstance(item, dict)]
+    first = segments[0] if segments else {}
+    seg_id = str(
+        first.get("id")
+        or first.get("segment_id")
+        or "11111111-1111-1111-1111-111111111111"
+    )
+    try:
+        seg_no = int(first.get("segment_no") or 1)
+    except (TypeError, ValueError):
+        seg_no = 1
+    quote = (
+        str(first.get("text") or "我当时先对齐目标。").strip()[:80]
+        or "我当时先对齐目标。"
+    )
+    dimensions = []
+    for item in _snapshot_dimensions(snap):
+        key = str(item["dimension_key"]).strip()
+        dimensions.append(
             {
-                "dimension_key": "D001",
+                "dimension_key": key,
                 "score": 4,
                 "evidence": [
                     {
-                        "segment_id": "11111111-1111-1111-1111-111111111111",
-                        "segment_no": 1,
-                        "quote": "我当时先对齐目标。",
+                        "segment_id": seg_id,
+                        "segment_no": seg_no,
+                        "quote": quote,
                     }
                 ],
-                "analysis": "候选人能描述冲突处理路径。",
+                "analysis": f"{key}表现稳定。",
                 "strengths": ["目标对齐"],
                 "risks": ["细节偏少"],
                 "insufficient_information": None,
                 "suggested_follow_ups": ["请补充具体结果"],
             }
-        ],
+        )
+    return {
+        "dimensions": dimensions,
         "overall_summary": "整体表现稳定，建议深入追问结果指标。",
         "model_reported_overall_score": "4.00",
     }
@@ -246,7 +281,12 @@ async def run_mock(
 
         await asyncio.sleep(sleep_seconds)
 
-    raw_request = {"provider": "mock", "task_type": task_type, "input": input_snapshot}
+    raw_request: dict[str, Any] = {"provider": "mock", "task_type": task_type}
+    if task_type not in {
+        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    }:
+        raw_request["input"] = input_snapshot
     try:
         if task_type == TASK_TYPE_JD_PARSE:
             parsed = parse_raw_jd_text(str(input_snapshot.get("raw_jd_text") or ""))
@@ -268,9 +308,13 @@ async def run_mock(
         elif task_type == TASK_TYPE_RESUME_SCORE:
             result = validate_ai_result(task_type, mock_resume_score(input_snapshot))
         elif task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
-            result = validate_ai_result(task_type, mock_interview_question_generate())
+            result = validate_ai_result(
+                task_type, mock_interview_question_generate(input_snapshot)
+            )
         elif task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
-            result = validate_ai_result(task_type, mock_interview_round_analyze())
+            result = validate_ai_result(
+                task_type, mock_interview_round_analyze(input_snapshot)
+            )
         else:
             return ProviderOutcome(
                 ok=False,

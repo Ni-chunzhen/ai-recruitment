@@ -157,10 +157,10 @@ Service `app/services/interview_analyses.py`：
 **Consumes**：Task 4–5；`sensitive_*_encrypted` 列名。  
 **Produces**：更新 `workers/ai_tasks.py`、`ai_providers/dify.py` 输入映射（mock 优先）、purge 清加密列
 
-- [ ] 写失败测试：成功写业务版本；`output_invalid` 写 attempt 加密列且 JSONB 无正文；purge 清空
-- [ ] 运行确认失败
-- [ ] 最小实现 `_after_task_success` 分支与加载-哈希复核
-- [ ] 运行确认通过；本地 `dev-worker.ps1 --pool=solo` + mock 冒烟（不连真实 Dify）
+- [x] 写失败测试：成功写业务版本；`output_invalid` 写 attempt 加密列且 JSONB 无正文；purge 清空
+- [x] 运行确认失败
+- [x] 最小实现 `_after_task_success` 分支与加载-哈希复核
+- [x] 运行确认通过；本地 mock Worker 单测覆盖成功 persist / OUTPUT_INVALID / 重试复用 snapshot / purge（不连真实 Dify）
 
 ---
 

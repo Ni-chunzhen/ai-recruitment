@@ -10,6 +10,8 @@ from app.core.config import get_settings
 from app.models.ai_task import (
     ERROR_CATEGORY_NON_RETRYABLE,
     ERROR_CATEGORY_RETRYABLE,
+    TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+    TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_JD_PARSE,
     TASK_TYPE_RESUME_PARSE,
     TASK_TYPE_RESUME_SCORE,
@@ -139,6 +141,35 @@ def build_dify_inputs(task_type: str, input_snapshot: dict[str, Any]) -> dict[st
             "resume_text": str(input_snapshot.get("resume_text") or ""),
             "candidate_id": str(input_snapshot.get("candidate_id") or ""),
             "job_title": job_title,
+        }
+
+    if task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        return {
+            "job_title": job_title,
+            "jd_text": str(input_snapshot.get("jd_text") or ""),
+            "resume_text": str(input_snapshot.get("resume_text") or ""),
+            "dimensions_json": json.dumps(
+                input_snapshot.get("dimensions") or [], ensure_ascii=False
+            ),
+        }
+
+    if task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
+        segments = []
+        for item in input_snapshot.get("segments") or []:
+            if not isinstance(item, dict):
+                continue
+            segments.append(
+                {
+                    "segment_id": str(item.get("id") or item.get("segment_id") or ""),
+                    "segment_no": item.get("segment_no"),
+                    "text": str(item.get("text") or ""),
+                }
+            )
+        return {
+            "dimensions_json": json.dumps(
+                input_snapshot.get("dimensions") or [], ensure_ascii=False
+            ),
+            "segments_json": json.dumps(segments, ensure_ascii=False),
         }
 
     return dict(input_snapshot)
@@ -756,6 +787,15 @@ async def run_dify(
     task_type: str,
     input_snapshot: dict[str, Any],
 ) -> ProviderOutcome:
+    if task_type in {
+        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    }:
+        # Stage 8 checkpoint: no live Dify. Keep input mapping above for later.
+        from app.services.ai_providers.mock import run_mock
+
+        return await run_mock(task_type=task_type, input_snapshot=input_snapshot)
+
     if task_type in {TASK_TYPE_RESUME_PARSE, TASK_TYPE_RESUME_SCORE}:
         if not _resume_dify_configured(task_type):
             # 未配置简历专用 Dify 凭据时回退 mock，便于阶段 5 联调

@@ -637,7 +637,7 @@ async def _audit(
     session: AsyncSession,
     *,
     action: str,
-    actor: User,
+    actor: User | None,
     request_context: RequestContext,
     round_id: UUID,
     changes: dict[str, Any],
@@ -648,7 +648,7 @@ async def _audit(
         result="success",
         resource_type="interview_round",
         request_context=request_context,
-        actor_user_id=actor.id,
+        actor_user_id=None if actor is None else actor.id,
         resource_id=str(round_id),
         changes=changes,
     )
@@ -1073,7 +1073,7 @@ async def persist_analysis_generation_result(
     except IntegrityError as exc:
         raise InterviewConflictError("analysis version conflict") from exc
 
-    if actor is not None and request_context is not None:
+    if request_context is not None:
         await _audit(
             session,
             action="interview_analysis.generated",

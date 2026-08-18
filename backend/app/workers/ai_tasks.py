@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -17,6 +20,8 @@ from app.models.ai_task import (
     AI_TASK_STATUS_PENDING,
     AI_TASK_STATUS_RUNNING,
     AI_TASK_STATUS_SUCCEEDED,
+    TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+    TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_RESUME_PARSE,
     TASK_TYPE_RESUME_SCORE,
     AITask,
@@ -27,6 +32,7 @@ from app.repositories.ai_tasks import (
     get_ai_task_by_id,
     list_tasks_for_raw_purge,
 )
+from app.repositories.interviews import InterviewNotFoundError
 from app.services.ai_providers.base import (
     ProviderOutcome,
     retry_countdown_seconds,
@@ -34,10 +40,27 @@ from app.services.ai_providers.base import (
 )
 from app.services.ai_providers.dify import extract_dify_run_ids, run_dify
 from app.services.ai_providers.mock import run_mock
+from app.services.audit import RequestContext
+from app.services.crypto import encrypt_secret
+from app.services.interview_ai_validation import AIOutputValidationError
+from app.services.interviews import InterviewValidationError
 from app.services.score_validation import ScoreOutputInvalidError
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+STAGE8_TASK_TYPES = frozenset(
+    {
+        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    }
+)
+_STAGE8_OUTPUT_INVALID_EXCEPTIONS = (
+    ScoreOutputInvalidError,
+    AIOutputValidationError,
+    InterviewValidationError,
+    InterviewNotFoundError,
+)
 
 
 async def _run_provider(
@@ -56,6 +79,159 @@ async def _run_provider(
     )
 
 
+def _question_memory_input(dto: Any) -> dict[str, Any]:
+    return {
+        "job_title": dto.job_title,
+        "jd_text": dto.jd_text,
+        "resume_text": dto.resume_text,
+        "dimensions": dto.dimensions,
+        "round_id": str(dto.round_id),
+        "job_version_id": str(dto.job_version_id),
+        "resume_version_id": str(dto.resume_version_id),
+        "workflow_key": dto.workflow_key,
+        "workflow_version": dto.workflow_version,
+        "input_snapshot_hash": dto.input_snapshot_hash,
+    }
+
+
+def _analysis_memory_input(dto: Any) -> dict[str, Any]:
+    return {
+        "round_id": str(dto.round_id),
+        "job_version_id": str(dto.job_version_id),
+        "transcript_id": str(dto.transcript_id),
+        "transcript_version_id": str(dto.transcript_version_id),
+        "dimensions": [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+            for item in dto.dimensions
+        ],
+        "segments": [
+            {
+                "id": str(seg.id),
+                "segment_id": str(seg.id),
+                "segment_no": seg.segment_no,
+                "speaker_role": seg.speaker_role,
+                "speaker_name": seg.speaker_name,
+                "start_time_ms": seg.start_time_ms,
+                "end_time_ms": seg.end_time_ms,
+                "text": seg.text,
+            }
+            for seg in dto.segments
+        ],
+    }
+
+
+async def _prepare_stage8_provider_input(
+    session: AsyncSession, task: AITask
+) -> dict[str, Any]:
+    if task.task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        from app.services.interview_questions import load_question_provider_input
+
+        dto = await load_question_provider_input(session, task_id=task.id)
+        return _question_memory_input(dto)
+    if task.task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
+        from app.services.interview_analyses import load_analysis_provider_input
+
+        dto = await load_analysis_provider_input(session, task_id=task.id)
+        return _analysis_memory_input(dto)
+    return dict(task.input_snapshot or {})
+
+
+def _content_sha256(payload: object) -> str:
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _stage8_public_payload(
+    *,
+    task: AITask,
+    outcome: ProviderOutcome | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    snap = dict(task.input_snapshot or {})
+    provider = None
+    http_status = None
+    if outcome is not None:
+        if isinstance(outcome.raw_request, dict):
+            provider = outcome.raw_request.get("provider")
+        http_status = outcome.http_status
+    payload: dict[str, Any] = {
+        "provider": provider or "mock",
+        "workflow_version": snap.get("workflow_version"),
+        "http_status": http_status,
+        "input_snapshot_hash": snap.get("input_snapshot_hash"),
+    }
+    if extra:
+        payload.update(extra)
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _encrypt_json_blob(payload: object | None) -> str | None:
+    if payload is None:
+        return None
+    return encrypt_secret(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _write_stage8_raw(
+    *,
+    task: AITask,
+    attempt: AITaskAttempt,
+    provider_input: dict[str, Any] | None,
+    outcome: ProviderOutcome | None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    if provider_input is not None:
+        attempt.sensitive_request_encrypted = _encrypt_json_blob(
+            {
+                "provider_input": provider_input,
+                "raw_request": outcome.raw_request if outcome is not None else None,
+            }
+        )
+    if outcome is not None:
+        attempt.sensitive_response_encrypted = _encrypt_json_blob(
+            {
+                "result": outcome.result,
+                "raw_response": outcome.raw_response,
+                "error_code": outcome.error_code,
+                "error_message": outcome.error_message,
+            }
+        )
+    public = _stage8_public_payload(task=task, outcome=outcome, extra=extra)
+    if task.raw_purged_at is None:
+        task.raw_request = public
+        task.raw_response = public
+    attempt.raw_response = public
+    task.result_payload = public
+
+
+def _stage8_success_extra(
+    task: AITask,
+    outcome: ProviderOutcome,
+    persist_meta: dict[str, Any] | None,
+) -> dict[str, Any]:
+    extra = dict(persist_meta or {})
+    result = outcome.result or {}
+    extra["content_sha256"] = _content_sha256(result)
+    extra["validation"] = "ok"
+    if task.task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        extra["question_count"] = len(result.get("questions") or [])
+    if task.task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
+        extra["dimension_count"] = len(result.get("dimensions") or [])
+    return extra
+
+
+async def _actor_for_ai_task(session: AsyncSession, task: AITask):
+    user_id = getattr(task, "created_by", None)
+    if user_id is None:
+        return None
+    from app.repositories.users import get_user_by_id
+
+    return await get_user_by_id(session, user_id)
+
+
+def _worker_request_context(task: AITask) -> RequestContext:
+    return RequestContext(request_id=f"ai-task:{task.id}")
+
+
 async def _process_ai_task_async(task_id: UUID) -> dict:
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
@@ -72,14 +248,15 @@ async def _after_task_success(
     *,
     task: AITask,
     outcome: ProviderOutcome,
-) -> None:
+) -> dict[str, Any] | None:
     if task.task_type == TASK_TYPE_RESUME_PARSE and outcome.result is not None:
         from app.services.resumes import apply_resume_parse_success
 
         await apply_resume_parse_success(
             session, task=task, result_payload=outcome.result
         )
-    elif task.task_type == TASK_TYPE_RESUME_SCORE and outcome.result is not None:
+        return None
+    if task.task_type == TASK_TYPE_RESUME_SCORE and outcome.result is not None:
         from app.services.resumes import persist_resume_score_result
 
         await persist_resume_score_result(
@@ -90,6 +267,38 @@ async def _after_task_success(
             else None,
             normalized=outcome.result,
         )
+        return None
+    if (
+        task.task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE
+        and outcome.result is not None
+    ):
+        from app.services.interview_questions import persist_question_generation_result
+
+        version = await persist_question_generation_result(
+            session,
+            task_id=task.id,
+            payload=outcome.result,
+            actor=await _actor_for_ai_task(session, task),
+            request_context=_worker_request_context(task),
+        )
+        version_id = getattr(version, "id", None)
+        return {"version_id": str(version_id)} if version_id is not None else {}
+    if (
+        task.task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE
+        and outcome.result is not None
+    ):
+        from app.services.interview_analyses import persist_analysis_generation_result
+
+        version = await persist_analysis_generation_result(
+            session,
+            task_id=task.id,
+            payload=outcome.result,
+            actor=await _actor_for_ai_task(session, task),
+            request_context=_worker_request_context(task),
+        )
+        version_id = getattr(version, "id", None)
+        return {"version_id": str(version_id)} if version_id is not None else {}
+    return None
 
 
 async def _after_task_failure(session: AsyncSession, *, task: AITask) -> None:
@@ -109,6 +318,13 @@ def _resolve_run_ids(outcome: ProviderOutcome) -> tuple[str | None, str | None]:
         run_id = run_id or parsed_run
         req_id = req_id or parsed_req
     return run_id, req_id
+
+
+def _output_invalid_code(exc: BaseException) -> str:
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.strip():
+        return code
+    return "output_validation_failed"
 
 
 async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
@@ -166,11 +382,27 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
     task_type = locked.task_type
     input_snapshot = dict(locked.input_snapshot or {})
     retry_cycle_no = locked.retry_cycle_no
+    provider_input = input_snapshot
+    load_error: BaseException | None = None
 
-    outcome = await _run_provider(
-        task_type=task_type,
-        input_snapshot=input_snapshot,
-    )
+    if task_type in STAGE8_TASK_TYPES:
+        try:
+            provider_input = await _prepare_stage8_provider_input(session, locked)
+        except _STAGE8_OUTPUT_INVALID_EXCEPTIONS as exc:
+            load_error = exc
+
+    if load_error is None:
+        outcome = await _run_provider(
+            task_type=task_type,
+            input_snapshot=provider_input,
+        )
+    else:
+        outcome = ProviderOutcome(
+            ok=False,
+            error_code=_output_invalid_code(load_error),
+            error_message=str(load_error) or "frozen input failed validation",
+            error_category="non_retryable",
+        )
 
     finished = datetime.now(UTC)
     duration_ms = int((finished - now).total_seconds() * 1000)
@@ -188,7 +420,24 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
         )
     ).scalar_one()
 
-    if task.raw_purged_at is None:
+    if task_type in STAGE8_TASK_TYPES:
+        extra = None
+        if not outcome.ok and (
+            load_error is not None
+            or outcome.error_code == "output_validation_failed"
+        ):
+            extra = {
+                "validation_error_code": outcome.error_code
+                or "output_validation_failed"
+            }
+        _write_stage8_raw(
+            task=task,
+            attempt=attempt,
+            provider_input=provider_input if load_error is None else None,
+            outcome=outcome,
+            extra=extra,
+        )
+    elif task.raw_purged_at is None:
         task.raw_request = outcome.raw_request
         task.raw_response = outcome.raw_response
 
@@ -197,10 +446,11 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
     attempt.http_status = outcome.http_status
     attempt.provider_run_id = provider_run_id
     attempt.request_id = request_id
-    if isinstance(outcome.raw_response, dict):
-        attempt.raw_response = outcome.raw_response
-    elif outcome.raw_response is not None:
-        attempt.raw_response = {"body": outcome.raw_response}
+    if task_type not in STAGE8_TASK_TYPES:
+        if isinstance(outcome.raw_response, dict):
+            attempt.raw_response = outcome.raw_response
+        elif outcome.raw_response is not None:
+            attempt.raw_response = {"body": outcome.raw_response}
 
     if task.status == AI_TASK_STATUS_CANCELLED:
         attempt.status = AI_TASK_STATUS_FAILED
@@ -214,10 +464,12 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
 
     if outcome.ok and outcome.result is not None:
         try:
-            await _after_task_success(session, task=task, outcome=outcome)
-        except ScoreOutputInvalidError as exc:
+            persist_meta = await _after_task_success(
+                session, task=task, outcome=outcome
+            )
+        except _STAGE8_OUTPUT_INVALID_EXCEPTIONS as exc:
             task.status = AI_TASK_STATUS_OUTPUT_INVALID
-            task.error_code = "output_validation_failed"
+            task.error_code = _output_invalid_code(exc)
             task.error_message = str(exc)
             task.error_category = "non_retryable"
             task.finished_at = finished
@@ -225,12 +477,30 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
             attempt.status = AI_TASK_STATUS_OUTPUT_INVALID
             attempt.error_category = "non_retryable"
             attempt.error_message = str(exc)
-            await _after_task_failure(session, task=task)
+            if task_type in STAGE8_TASK_TYPES:
+                _write_stage8_raw(
+                    task=task,
+                    attempt=attempt,
+                    provider_input=provider_input,
+                    outcome=outcome,
+                    extra={"validation_error_code": task.error_code},
+                )
+            else:
+                await _after_task_failure(session, task=task)
             await session.commit()
             return {"status": AI_TASK_STATUS_OUTPUT_INVALID, "attempt_no": attempt_no}
 
         task.status = AI_TASK_STATUS_SUCCEEDED
-        task.result_payload = outcome.result
+        if task_type in STAGE8_TASK_TYPES:
+            _write_stage8_raw(
+                task=task,
+                attempt=attempt,
+                provider_input=provider_input,
+                outcome=outcome,
+                extra=_stage8_success_extra(task, outcome, persist_meta),
+            )
+        else:
+            task.result_payload = outcome.result
         task.finished_at = finished
         task.updated_at = finished
         attempt.status = AI_TASK_STATUS_SUCCEEDED
@@ -245,11 +515,13 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
     attempt.error_category = task.error_category
     attempt.error_message = task.error_message
 
-    if outcome.error_code == "output_validation_failed":
+    if outcome.error_code == "output_validation_failed" or load_error is not None:
         task.status = AI_TASK_STATUS_OUTPUT_INVALID
         task.finished_at = finished
         task.updated_at = finished
-        await _after_task_failure(session, task=task)
+        attempt.status = AI_TASK_STATUS_OUTPUT_INVALID
+        if task_type not in STAGE8_TASK_TYPES:
+            await _after_task_failure(session, task=task)
         await session.commit()
         return {"status": AI_TASK_STATUS_OUTPUT_INVALID, "attempt_no": attempt_no}
 
@@ -274,9 +546,71 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
     task.status = AI_TASK_STATUS_FAILED
     task.finished_at = finished
     task.updated_at = finished
-    await _after_task_failure(session, task=task)
+    if task_type not in STAGE8_TASK_TYPES:
+        await _after_task_failure(session, task=task)
     await session.commit()
     return {"status": AI_TASK_STATUS_FAILED, "attempt_no": attempt_no}
+
+
+def _clear_attempt_raw(attempt: AITaskAttempt, now: datetime) -> bool:
+    changed = False
+    if attempt.raw_response is not None:
+        attempt.raw_response = None
+        changed = True
+    if attempt.sensitive_request_encrypted is not None:
+        attempt.sensitive_request_encrypted = None
+        changed = True
+    if attempt.sensitive_response_encrypted is not None:
+        attempt.sensitive_response_encrypted = None
+        changed = True
+    if attempt.response_purged_at is None:
+        attempt.response_purged_at = now
+        changed = True
+    return changed
+
+
+async def _purge_raw_payloads(session: AsyncSession, *, cutoff: datetime) -> dict:
+    tasks = await list_tasks_for_raw_purge(session, cutoff=cutoff)
+    purged = 0
+    attempt_purged = 0
+    now = datetime.now(UTC)
+    for task in tasks:
+        task.raw_request = None
+        task.raw_response = None
+        task.raw_purged_at = now
+        task.updated_at = now
+        purged += 1
+        attempts = (
+            await session.execute(
+                select(AITaskAttempt).where(AITaskAttempt.task_id == task.id)
+            )
+        ).scalars().all()
+        for attempt in attempts:
+            if _clear_attempt_raw(attempt, now):
+                attempt_purged += 1
+    aged_attempts = (
+        await session.execute(
+            select(AITaskAttempt).where(
+                AITaskAttempt.created_at < cutoff,
+                AITaskAttempt.response_purged_at.is_(None),
+                or_(
+                    AITaskAttempt.raw_response.is_not(None),
+                    AITaskAttempt.sensitive_request_encrypted.is_not(None),
+                    AITaskAttempt.sensitive_response_encrypted.is_not(None),
+                ),
+            )
+        )
+    ).scalars().all()
+    for attempt in aged_attempts:
+        if _clear_attempt_raw(attempt, now):
+            attempt_purged += 1
+    if purged or attempt_purged:
+        await session.commit()
+    return {
+        "purged": purged,
+        "attempt_purged": attempt_purged,
+        "cutoff": cutoff.isoformat(),
+    }
 
 
 async def _purge_expired_raw_async() -> dict:
@@ -288,47 +622,7 @@ async def _purge_expired_raw_async() -> dict:
             cutoff = datetime.now(UTC) - timedelta(
                 days=settings.AI_RAW_PAYLOAD_RETENTION_DAYS
             )
-            tasks = await list_tasks_for_raw_purge(session, cutoff=cutoff)
-            purged = 0
-            attempt_purged = 0
-            now = datetime.now(UTC)
-            for task in tasks:
-                task.raw_request = None
-                task.raw_response = None
-                task.raw_purged_at = now
-                task.updated_at = now
-                purged += 1
-                attempts = (
-                    await session.execute(
-                        select(AITaskAttempt).where(AITaskAttempt.task_id == task.id)
-                    )
-                ).scalars().all()
-                for attempt in attempts:
-                    if attempt.raw_response is not None:
-                        attempt.raw_response = None
-                        attempt_purged += 1
-                    if attempt.response_purged_at is None:
-                        attempt.response_purged_at = now
-            aged_attempts = (
-                await session.execute(
-                    select(AITaskAttempt).where(
-                        AITaskAttempt.raw_response.is_not(None),
-                        AITaskAttempt.created_at < cutoff,
-                        AITaskAttempt.response_purged_at.is_(None),
-                    )
-                )
-            ).scalars().all()
-            for attempt in aged_attempts:
-                attempt.raw_response = None
-                attempt.response_purged_at = now
-                attempt_purged += 1
-            if purged or attempt_purged:
-                await session.commit()
-            return {
-                "purged": purged,
-                "attempt_purged": attempt_purged,
-                "cutoff": cutoff.isoformat(),
-            }
+            return await _purge_raw_payloads(session, cutoff=cutoff)
     finally:
         await engine.dispose()
 
