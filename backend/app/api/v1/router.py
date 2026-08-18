@@ -7,6 +7,7 @@ from app.api.v1.endpoints import (
     auth,
     candidates,
     health,
+    interview_ai,
     interview_transcripts,
     interviews,
     invitations,
@@ -28,3 +29,4 @@ api_router.include_router(resumes.router)
 api_router.include_router(interviews.router)
 api_router.include_router(invitations.router)
 api_router.include_router(interview_transcripts.router)
+api_router.include_router(interview_ai.router)

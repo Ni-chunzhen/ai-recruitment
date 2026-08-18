@@ -167,12 +167,12 @@ Service `app/services/interview_analyses.py`：
 ## Task 7 — API
 
 **Consumes**：Task 4–6。  
-**Produces**：`api/v1/endpoints/interview_questions.py`、`interview_analyses.py`、更新 `router.py`
+**Produces**：`api/v1/endpoints/interview_ai.py`、`schemas/interview_ai_api.py`、更新 `router.py`
 
-- [ ] 写失败测试：`tests/api/v1/test_interview_questions.py`、`test_interview_analyses.py`
-- [ ] 运行确认失败
-- [ ] 最小实现；no-store；对象级 404；永不返回 sensitive_* / raw 正文
-- [ ] 运行确认通过
+- [x] 写失败测试：`tests/api/v1/test_interview_ai.py`（题纲与单轮分析合文件；检查点指定单 endpoint 文件）
+- [x] 运行确认失败
+- [x] 最小实现；no-store；对象级 404；永不返回 sensitive_* / raw 正文
+- [x] 运行确认通过
 
 ---
 
