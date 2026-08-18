@@ -16,6 +16,7 @@ import InterviewTimelineView from '../views/InterviewTimelineView.vue'
 import InterviewTranscriptView from '../views/InterviewTranscriptView.vue'
 import AiTasksView from '../views/AiTasksView.vue'
 import CandidateCenterListView from '../views/CandidateCenterListView.vue'
+import CandidateCenterDetailView from '../views/CandidateCenterDetailView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -90,6 +91,12 @@ const router = createRouter({
       path: '/candidate-center',
       name: 'candidate-center',
       component: CandidateCenterListView,
+      meta: { requiresAuth: true, permission: 'recruitment.manage' },
+    },
+    {
+      path: '/candidate-center/candidates/:candidateId/applications/:applicationId',
+      name: 'candidate-center-detail',
+      component: CandidateCenterDetailView,
       meta: { requiresAuth: true, permission: 'recruitment.manage' },
     },
     {
