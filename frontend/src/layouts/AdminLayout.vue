@@ -16,6 +16,7 @@ const mainNavItems = computed(() => {
   if (canManageJobs.value) {
     items.push({ name: 'jobs', label: '岗位管理', path: '/jobs' })
     items.push({ name: 'resumes', label: '简历库', path: '/resumes' })
+    items.push({ name: 'candidate-center', label: '候选人中心', path: '/candidate-center' })
   }
   return items
 })
