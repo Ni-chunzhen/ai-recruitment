@@ -709,7 +709,6 @@ async def create_interview_round(
             )
             await add_schedule(session, schedule)
             round_.current_schedule_id = schedule.id
-            round_.schedules.append(schedule)
         await _store_idempotency(
             session,
             actor=actor,

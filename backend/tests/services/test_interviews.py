@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import MissingGreenlet
 
 from app.models.candidate import APPLICATION_STATUS_IN_PROGRESS
 from app.models.interview import (
@@ -160,6 +161,101 @@ async def test_create_requires_at_least_one_interviewer() -> None:
                 "interviewers": [],
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_create_round_with_schedule_does_not_lazy_load_schedules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application()
+    holder: dict = {}
+
+    async def fake_add_round(_session, round_: InterviewRound) -> InterviewRound:
+        if round_.id is None:
+            round_.id = uuid4()
+        now = datetime.now(UTC)
+        if round_.created_at is None:
+            round_.created_at = now
+        if round_.updated_at is None:
+            round_.updated_at = now
+        holder["round"] = round_
+
+        def _unloaded_append(_item: InterviewSchedule) -> None:
+            raise MissingGreenlet(
+                "greenlet_spawn has not been called; can't call await_only() here."
+            )
+
+        round_.schedules.append = _unloaded_append  # type: ignore[method-assign]
+        return round_
+
+    async def fake_add_schedule(
+        _session, schedule: InterviewSchedule
+    ) -> InterviewSchedule:
+        if schedule.id is None:
+            schedule.id = uuid4()
+        if schedule.created_at is None:
+            schedule.created_at = datetime.now(UTC)
+        holder["schedule"] = schedule
+        return schedule
+
+    async def fake_get_round(_session, _round_id):
+        round_ = holder["round"]
+        schedule = holder["schedule"]
+        loaded = [item for item in list(round_.schedules) if item is not schedule]
+        loaded.append(schedule)
+        round_.schedules = loaded
+        round_.current_schedule_id = schedule.id
+        return round_
+
+    monkeypatch.setattr(
+        "app.services.interviews.get_application_by_id",
+        AsyncMock(return_value=application),
+    )
+    monkeypatch.setattr(
+        "app.services.interviews.find_idempotency",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr("app.services.interviews.add_round", fake_add_round)
+    monkeypatch.setattr("app.services.interviews.add_schedule", fake_add_schedule)
+    monkeypatch.setattr("app.services.interviews.add_idempotency", AsyncMock())
+    monkeypatch.setattr("app.services.interviews.record_audit", AsyncMock())
+    monkeypatch.setattr("app.services.interviews.get_round_by_id", fake_get_round)
+    monkeypatch.setattr(
+        "app.services.interviews.find_candidate_conflicts",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "app.services.interviews.find_interviewer_conflicts",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "app.services.interviews.get_users_by_ids",
+        AsyncMock(return_value=[]),
+    )
+
+    start = datetime.now(UTC)
+    payload = _create_payload(
+        schedule={
+            "start_at_utc": start.isoformat(),
+            "end_at_utc": (start + timedelta(hours=1)).isoformat(),
+            "timezone": "Asia/Shanghai",
+            "format": "ONLINE",
+            "meeting_mode": "MANUAL",
+            "meeting_url": "https://meet.example.com/closed-loop-test",
+        }
+    )
+    result = await create_interview_round(
+        AsyncMock(),
+        application_id=application.id,
+        payload=payload,
+        actor=_actor(),
+        request_context=_ctx(),
+    )
+    assert result.status == INTERVIEW_STATUS_SCHEDULED
+    assert result.current_schedule is not None
+    assert result.current_schedule.meeting_url == (
+        "https://meet.example.com/closed-loop-test"
+    )
 
 
 @pytest.mark.asyncio
