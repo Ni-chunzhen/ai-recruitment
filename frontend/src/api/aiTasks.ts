@@ -6,6 +6,8 @@ export type AITaskType =
   | 'SCORE_DIMENSION_RECOMMEND'
   | 'RESUME_PARSE'
   | 'RESUME_SCORE'
+  | 'INTERVIEW_QUESTION_GENERATE'
+  | 'INTERVIEW_ROUND_ANALYZE'
 export type AITaskStatus =
   | 'pending'
   | 'running'

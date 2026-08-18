@@ -27,6 +27,8 @@ import {
 } from '../api/interviews'
 import { confirmInvitation } from '../api/invitations'
 import CompleteWithoutTranscriptDialog from '../components/interviews/CompleteWithoutTranscriptDialog.vue'
+import InterviewAnalysisDrawer from '../components/interviews/InterviewAnalysisDrawer.vue'
+import InterviewQuestionSetDrawer from '../components/interviews/InterviewQuestionSetDrawer.vue'
 import TranscriptImportDrawer from '../components/interviews/TranscriptImportDrawer.vue'
 import InterviewInvitationDrawer from '../components/InterviewInvitationDrawer.vue'
 import AdminLayout from '../layouts/AdminLayout.vue'
@@ -75,6 +77,8 @@ const confirmSendSummary = ref('')
 const activeRound = ref<InterviewRound | null>(null)
 const importOpen = ref(false)
 const withoutOpen = ref(false)
+const questionSetOpen = ref(false)
+const analysisOpen = ref(false)
 const transcriptByRound = ref<Record<string, TranscriptList>>({})
 
 const form = reactive({
@@ -329,6 +333,16 @@ function openImport(round: InterviewRound) {
 function openWithoutTranscript(round: InterviewRound) {
   activeRound.value = round
   withoutOpen.value = true
+}
+
+function openQuestionSet(round: InterviewRound) {
+  activeRound.value = round
+  questionSetOpen.value = true
+}
+
+function openRoundAnalysis(round: InterviewRound) {
+  activeRound.value = round
+  analysisOpen.value = true
 }
 
 function goTranscript(
@@ -1003,6 +1017,24 @@ onMounted(() => {
                   >
                     查看已确认转写
                   </el-button>
+                  <el-button
+                    link
+                    type="primary"
+                    size="small"
+                    data-test="open-question-set"
+                    @click="openQuestionSet(round)"
+                  >
+                    面试题纲
+                  </el-button>
+                  <el-button
+                    link
+                    type="primary"
+                    size="small"
+                    data-test="open-round-analysis"
+                    @click="openRoundAnalysis(round)"
+                  >
+                    单轮分析
+                  </el-button>
                 </div>
               </div>
               <p class="round-meta">
@@ -1239,6 +1271,19 @@ onMounted(() => {
       :round-id="activeRound?.id ?? null"
       :round-version="activeRound?.version ?? 0"
       @completed="load"
+    />
+
+    <InterviewQuestionSetDrawer
+      v-model:open="questionSetOpen"
+      :round="activeRound"
+      :can-manage="canManage"
+    />
+
+    <InterviewAnalysisDrawer
+      v-model:open="analysisOpen"
+      :round="activeRound"
+      :can-manage="canManage"
+      :has-confirmed-transcript="activeRound ? hasConfirmed(activeRound) : false"
     />
 
     <el-dialog

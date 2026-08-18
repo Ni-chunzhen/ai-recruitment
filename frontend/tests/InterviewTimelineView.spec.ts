@@ -210,6 +210,26 @@ vi.mock('../src/components/interviews/TranscriptImportDrawer.vue', () => ({
   },
 }))
 
+vi.mock('../src/components/interviews/InterviewQuestionSetDrawer.vue', () => ({
+  default: {
+    name: 'InterviewQuestionSetDrawer',
+    props: ['open', 'round', 'canManage'],
+    emits: ['update:open'],
+    template:
+      '<div v-if="open" data-test="question-set-drawer-stub">题纲抽屉</div>',
+  },
+}))
+
+vi.mock('../src/components/interviews/InterviewAnalysisDrawer.vue', () => ({
+  default: {
+    name: 'InterviewAnalysisDrawer',
+    props: ['open', 'round', 'canManage', 'hasConfirmedTranscript'],
+    emits: ['update:open'],
+    template:
+      '<div v-if="open" data-test="analysis-drawer-stub">分析抽屉</div>',
+  },
+}))
+
 const router = createRouter({
   history: createMemoryHistory(),
   routes: [
@@ -1074,5 +1094,59 @@ describe('InterviewTimelineView', () => {
     expect(wrapper.find('[data-test="generate-invitation"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="confirm-invitation"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="view-invitation"]').exists()).toBe(true)
+  })
+
+  it('shows question-guide and round-analysis entries on rounds', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([
+        makeRound({
+          id: ROUND_SCHEDULED,
+          status: 'SCHEDULED',
+        }),
+        makeRound({
+          id: ROUND_DONE,
+          sequence_no: 2,
+          name: '已完成',
+          status: 'COMPLETED',
+          allowed_actions: [],
+        }),
+      ]),
+    )
+    vi.mocked(interviewsApi.getRoundTranscripts).mockImplementation(async (roundId) => {
+      if (roundId === ROUND_DONE) {
+        return {
+          transcript: {
+            id: 'tr-done',
+            interview_round_id: ROUND_DONE,
+            original_version_id: 't1',
+            current_draft_version_id: null,
+            current_confirmed_version_id: 'c1',
+            version: 2,
+            created_at: '2026-08-17T00:00:00Z',
+            updated_at: '2026-08-17T00:00:00Z',
+          },
+          versions: [],
+        }
+      }
+      return { transcript: null, versions: [] }
+    })
+    const wrapper = await mountReady(['recruitment.manage'])
+    const scheduled = wrapper.get(`[data-round-id="${ROUND_SCHEDULED}"]`)
+    expect(scheduled.get('[data-test="open-question-set"]').text()).toContain('面试题纲')
+    expect(scheduled.get('[data-test="open-round-analysis"]').text()).toContain('单轮分析')
+    await scheduled.get('[data-test="open-question-set"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="question-set-drawer-stub"]').exists()).toBe(true)
+  })
+
+  it('keeps execute-only users on read entries without hire/offer copy', async () => {
+    const wrapper = await mountReady(['interview.execute'])
+    expect(wrapper.find('[data-test="open-question-set"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="open-round-analysis"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('录用')
+    expect(wrapper.text()).not.toContain('Offer')
+    expect(wrapper.text()).not.toContain('多轮综合')
+    expect(wrapper.text()).not.toContain('自动决策')
+    expect(wrapper.text()).not.toContain('Dify')
   })
 })

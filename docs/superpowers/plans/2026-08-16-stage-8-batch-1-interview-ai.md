@@ -181,10 +181,10 @@ Service `app/services/interview_analyses.py`：
 **Consumes**：Task 7 OpenAPI 形状。  
 **Produces**：`frontend/src/api/interviewAi.ts`；题纲/分析组件；扩展 `InterviewTimelineView.vue`、`aiTasks.ts` 类型
 
-- [ ] 写失败 Vitest（时间轴入口、STALE、WITHOUT_TRANSCRIPT 文案）
-- [ ] 运行确认失败
-- [ ] 最小 UI；不阻断开面；无录用按钮
-- [ ] `pnpm vitest run` + `pnpm type-check` 通过
+- [x] 写失败 Vitest（时间轴入口、STALE、WITHOUT_TRANSCRIPT 文案）
+- [x] 运行确认失败
+- [x] 最小 UI；不阻断开面；无录用按钮
+- [x] `pnpm vitest run` + `pnpm type-check` 通过
 
 ---
 
