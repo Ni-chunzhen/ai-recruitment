@@ -80,10 +80,38 @@
 **Consumes**：Task 2–3；幂等与加密助手。  
 **Produces**：`repositories/interview_questions.py`、`services/interview_questions.py`
 
-- [ ] 写失败测试：`tests/services/test_interview_questions.py`（缺简历拒绝、冻结 job_version、MANUAL_EDIT 继承、source/ai_task Check 语义、409、404）
-- [ ] 运行确认失败
-- [ ] 最小实现生成/编辑/确认；不提供题纲版本删除动作；snapshot 仅引用；入队 `INTERVIEW_QUESTION_GENERATE`
-- [ ] 运行确认通过
+- [x] 写失败测试：`tests/services/test_interview_questions.py`（缺简历拒绝、冻结 job_version、MANUAL_EDIT 继承、source/ai_task Check 语义、409、404）
+- [x] 运行确认失败
+- [x] 最小实现生成/编辑/确认；不提供题纲版本删除动作；snapshot 仅引用
+- [x] 运行确认通过
+- [x] 事务修正：`request_question_generation` 只创建并 flush PENDING task，不 enqueue；API 后续检查点 `commit` 后再调用 `dispatch_persisted_question_generation_task(task_id)`
+
+调用顺序：
+
+```text
+request_question_generation
+  → 创建并 flush PENDING task
+  → 返回 task_id
+API（后续检查点）
+  → commit
+  → dispatch_persisted_question_generation_task(task_id)
+```
+
+补充说明：
+
+- Celery 投递失败不会回滚已提交任务；任务保留为 PENDING，后续可由管理员重试/恢复投递
+- 不得通过“提交前 enqueue”解决这个问题
+- 分析 service 必须沿用同一提交后 dispatch 模式
+
+实际函数名：
+
+Repository `app/repositories/interview_questions.py`：
+`get_question_set_by_round`、`get_question_set_for_update`、`get_question_version_by_id`、`get_question_version_by_task_id`、`list_question_versions`、`create_question_set`、`create_question_version`、`create_question_items`、`next_question_version_no`
+
+Service `app/services/interview_questions.py`：
+`request_question_generation`、`dispatch_persisted_question_generation_task`、`persist_question_generation_result`、`create_manual_question_version`、`confirm_question_set`、`list_question_versions`、`get_question_version_detail`、`load_question_provider_input`
+
+通用 AI task 扩展：`find_task_by_input_snapshot_hash`；常量 `QUESTION_SNAPSHOT_SCHEMA_VERSION` / `QUESTION_WORKFLOW_KEY` / `QUESTION_WORKFLOW_VERSION`
 
 ---
 
@@ -92,10 +120,35 @@
 **Consumes**：Task 2–3；转写解密。  
 **Produces**：`repositories/interview_analyses.py`、`services/interview_analyses.py`
 
-- [ ] 写失败测试：`tests/services/test_interview_analyses.py`（门禁、anchors、segment hash、证据、STALE、重试钉死 ID）
-- [ ] 运行确认失败
-- [ ] 最小实现；禁止写决策字段；不改 round/application 状态
-- [ ] 运行确认通过
+- [x] 写失败测试：`tests/services/test_interview_analyses.py`（门禁、anchors、segment hash、证据、STALE、重试钉死 ID）
+- [x] 运行确认失败
+- [x] 最小实现；禁止写决策字段；不改 round/application 状态；不 enqueue、不 commit
+- [x] 运行确认通过
+- [x] segment_refs 冻结 `segment_id` / `segment_no` / `plaintext_sha256`；loader/persist 重解密复核 hash
+- [x] 事务修正：`request_analysis_generation` 只创建并 flush PENDING task；API 后续 `commit` 后再调用 `dispatch_persisted_analysis_generation_task(task_id)`
+
+调用顺序：
+
+```text
+request_analysis_generation
+  → 创建并 flush PENDING task
+  → 返回 task_id
+API（后续检查点）
+  → commit
+  → dispatch_persisted_analysis_generation_task(task_id)
+```
+
+补充说明：Celery 投递失败不回滚已提交 PENDING；不得提交前 enqueue。
+
+实际函数名：
+
+Repository `app/repositories/interview_analyses.py`：
+`get_analysis_by_round`、`get_analysis_for_update`、`get_analysis_version_by_id`、`get_analysis_version_by_task_id`、`list_analysis_versions`、`create_analysis`、`create_analysis_version`、`create_analysis_dimensions`、`create_analysis_evidence`、`next_analysis_version_no`
+
+Service `app/services/interview_analyses.py`：
+`request_analysis_generation`、`dispatch_persisted_analysis_generation_task`、`load_analysis_provider_input`、`persist_analysis_generation_result`、`list_analysis_versions`、`get_analysis_version_detail`
+
+常量：`ANALYSIS_SNAPSHOT_SCHEMA_VERSION` / `ANALYSIS_WORKFLOW_KEY` / `ANALYSIS_WORKFLOW_VERSION` / `ANALYSIS_DETAIL_CACHE_CONTROL` / `INTERVIEW_ANALYZE_MAX_CHARS`
 
 ---
 

@@ -136,6 +136,29 @@ async def find_inflight_task(
     return result.scalar_one_or_none()
 
 
+async def find_task_by_input_snapshot_hash(
+    session: AsyncSession,
+    *,
+    business_type: str,
+    business_id: UUID,
+    task_type: str,
+    input_snapshot_hash: str,
+) -> AITask | None:
+    result = await session.execute(
+        select(AITask)
+        .where(
+            AITask.business_type == business_type,
+            AITask.business_id == business_id,
+            AITask.task_type == task_type,
+            AITask.input_snapshot["input_snapshot_hash"].as_string()
+            == input_snapshot_hash,
+        )
+        .order_by(AITask.created_at.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_admin_ai_tasks(
     session: AsyncSession,
     *,
