@@ -5,6 +5,7 @@ from app.api.v1.endpoints import (
     ai_tasks,
     audit_logs,
     auth,
+    candidate_center,
     candidates,
     health,
     interview_ai,
@@ -23,6 +24,7 @@ api_router.include_router(users.router)
 api_router.include_router(audit_logs.router)
 api_router.include_router(jobs.router)
 api_router.include_router(candidates.router)
+api_router.include_router(candidate_center.router)
 api_router.include_router(ai_tasks.router)
 api_router.include_router(admin_ai_tasks.router)
 api_router.include_router(resumes.router)
