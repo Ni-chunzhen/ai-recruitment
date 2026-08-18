@@ -114,7 +114,33 @@
 | 对象级对 execute | 未分配轮次一律 404 `not found`（本模块不采用 execute 路径） |
 | 菜单 | `AdminLayout`：`recruitment.manage` 可见「岗位管理」「简历库」 |
 
-既有应聘详情 `GET /applications/{application_id}` 返回 `ApplicationOut`（流程状态，无面试聚合），不能替代候选人中心详情。
+既有应聘详情 `GET /api/v1/applications/{application_id}` 返回 `ApplicationOut`（流程状态，无面试聚合），不能替代候选人中心详情。
+
+### 2.6 既有评分报告与面试时间轴路径（源码核实）
+
+前端 axios `baseURL` 为 `/api/v1`（`frontend/src/api/client.ts`）。下列 API 路径均相对于该前缀；完整 URL 形如 `/api/v1/...`。
+
+**简历评分报告**
+
+| 层 | 路径 | 证据 |
+|---|---|---|
+| 前端页面 | `/applications/:applicationId/score-report`，路由名 `score-report`，组件 `ScoreReportView` | `frontend/src/router/index.ts` |
+| 前端跳转 | `router.push({ name: 'score-report', params: { applicationId } })` | `JobDetailView.vue`、`ResumesListView.vue` |
+| 前端 API | `getScoreReport` → `GET /applications/{applicationId}/resume-score-report` | `frontend/src/api/resumes.ts`；`ScoreReportView.vue` 调用 |
+| 后端 API | `GET /applications/{application_id}/resume-score-report`，`require_permission("recruitment.manage")` | `backend/app/api/v1/endpoints/resumes.py` |
+
+页面路径含 `score-report`，数据接口含 `resume-score-report`，二者不得混用。
+
+**面试时间轴**
+
+| 层 | 路径 | 证据 |
+|---|---|---|
+| 前端页面 | `/applications/:applicationId/interviews`，路由名 `application-interviews`，组件 `InterviewTimelineView` | `frontend/src/router/index.ts` |
+| 前端跳转 | `name: 'application-interviews'`；转写页另用字面量 `/applications/${id}/interviews` | `ScoreReportView.vue`、`InterviewTranscriptView.vue` |
+| 前端 API | `getInterviewTimeline` → `GET /applications/{applicationId}/interview-rounds` | `frontend/src/api/interviews.ts`；`InterviewTimelineView.vue` 调用 |
+| 后端 API | `GET /applications/{application_id}/interview-rounds`，`response_model=InterviewTimelineOut` | `backend/app/api/v1/endpoints/interviews.py` |
+
+页面路径含 `interviews`，数据接口含 `interview-rounds`，二者不得混用。候选人中心跳转页面用前端路由，拉数复用对应 API。
 
 ## 3. 查询与列表
 
@@ -180,23 +206,28 @@ EXISTS (
 - 候选人：`candidate_id`、`name`；电话/邮箱沿用岗位候选人列表惯例（非密文）。
 - 岗位：`job_id`、`job_name`、`job_code`、`job_version_id`、版本标签。
 - 应聘状态：`status` 与 `pipeline_status` 分列，不合成假状态。
-- 最新相关轮次：本应聘 `sequence_no` 最大的 `InterviewRound`（含取消/异常结束）；字段：`round_id/name/sequence_no/status`。无轮次则全空。
-- 该最新轮次的安排状态：无 `current_schedule_id` → `none`；否则即该安排的 `ACTIVE/SUPERSEDED/CANCELLED`。不返回会议密码、明文电话、`meeting_url` 以外的密文。列表甚至不返回 `meeting_url`（时间轴摘要才有 URL）。
-- 邀约状态（只看最新轮次，真实落库，不推断「该发未发」）：
+- **展示轮次**（列表「最新相关轮次」只指这一条，随当前 `assigned` 变化，禁止另用「全局最大 sequence_no」）：
+  - `assigned=true`：本应聘中 `sequence_no` 最大、且至少存在一条 `InterviewRoundInterviewer` 的 `InterviewRound`（取消/异常结束只要仍有分配行则仍可当选）。
+  - `assigned=false`：本应聘中 `sequence_no` 最大的任意 `InterviewRound`（不要求有面试官）。
+  - 无符合条件的轮次则 `round_id/name/sequence_no/status` 全空，下列安排/邀约/转写/题纲/分析状态一律 `none`。
+  - 有展示轮次时字段：`round_id/name/sequence_no/status`。
+- 安排、邀约、转写、题纲、单轮分析状态 **均只派生自该展示轮次**，不扫其他轮次，不混用其他 `JobApplication`。
+- 安排状态：展示轮次无 `current_schedule_id` → `none`；否则即该安排的 `ACTIVE/SUPERSEDED/CANCELLED`。不返回会议密码、明文电话。列表不返回 `meeting_url`（时间轴安排摘要才有 URL）。
+- 邀约状态（只看展示轮次，真实落库，不推断「该发未发」）：
   1. `invitation_confirmed_at IS NOT NULL` → `confirmed`
   2. 否则存在 `RECORDED_SENT` 消息 → `recorded_sent`
   3. 否则存在 `READY` → `ready`
   4. 否则存在 `DRAFT` → `draft`
   5. 否则存在消息且全部 `VOIDED` → `voided`
   6. 否则 → `none`
-- 转写状态（只看最新轮次）：
+- 转写状态（只看展示轮次）：
   1. `transcript_completion_mode = WITHOUT_TRANSCRIPT` → `without_transcript`
   2. 否则 `current_confirmed_version_id` 非空 → `confirmed`
   3. 否则 `current_draft_version_id` 非空 → `draft`
   4. 否则 `original_version_id` 非空 → `original`
   5. 否则 → `none`
-- 题纲状态：无 `InterviewQuestionSet` → `none`；否则即 set 的 `DRAFT/READY/ARCHIVED`。
-- 单轮分析状态：无 analysis 或 `current_version_id` 空 → `none`；有当前版本且 `_is_stale` → `stale`；有当前版本且非 stale → `ready`。列表可带 `overall_score`（数值），禁止 `overall_summary` 与证据。
+- 题纲状态：展示轮次无 `InterviewQuestionSet` → `none`；否则即 set 的 `DRAFT/READY/ARCHIVED`。
+- 单轮分析状态：展示轮次无 analysis 或 `current_version_id` 空 → `none`；有当前版本且 `_is_stale` → `stale`；有当前版本且非 stale → `ready`。列表可带 `overall_score`（数值），禁止 `overall_summary` 与证据。
 
 禁止返回：简历正文、`extracted_text`/`standardized_text`/`confirmed_content`/`ai_structured`、转写正文、题干、分析正文、证据 quote、任何 `*_encrypted`、`raw_output` / `raw_request` / `raw_response` / `result_payload`、会议密码。
 
@@ -218,14 +249,14 @@ EXISTS (
 
 只加载 **这一条** `JobApplication` 及其 `application_id` 下的数据。
 
-1. **简历摘要**：若 `resume_version_id` 空则标明未绑定。否则只给 `ResumeListItem` 级元数据：`resume_id`、`resume_version_id`、`version_label`、`kind`、`status`、`original_filename`、`confirmed_at`。跳转既有 `/resumes/{versionId}/review`。不返回抽取正文、标准化正文、draft/confirmed JSON、storage_key、preview_url。
-2. **AI 评分摘要**：只查 `AiResult.application_id = 当前应聘` 且 `result_type=RESUME_SCORE` 且 `is_current`。无结果就显示无评分。摘要字段：`result_id`、`version_label`、`total_score`、`calculated_total_score`、`score_band`、`recommendation`、`summary`、`information_insufficient`、`is_stale`、`is_current`、各维 `name/weight/score`。不返回 `raw_output`、维度 `evidence/gap/risk`。完整报告跳转既有 `/applications/{id}/score-report`。
+1. **简历摘要**：若 `resume_version_id` 空则标明未绑定。否则只给 `ResumeListItem` 级元数据：`resume_id`、`resume_version_id`、`version_label`、`kind`、`status`、`original_filename`、`confirmed_at`。跳转既有 `/resumes/:versionId/review`（路由名 `resume-review`）。不返回抽取正文、标准化正文、draft/confirmed JSON、storage_key、preview_url。
+2. **AI 评分摘要**：只查 `AiResult.application_id = 当前应聘` 且 `result_type=RESUME_SCORE` 且 `is_current`。无结果就显示无评分。摘要字段：`result_id`、`version_label`、`total_score`、`calculated_total_score`、`score_band`、`recommendation`、`summary`、`information_insufficient`、`is_stale`、`is_current`、各维 `name/weight/score`。不返回 `raw_output`、维度 `evidence/gap/risk`。完整报告跳转前端页 `/applications/:applicationId/score-report`（路由名 `score-report`）；该页自身拉数走 `GET /api/v1/applications/{application_id}/resume-score-report`。
 3. **应聘状态**：`status`、`pipeline_status`、`close_action`、`interview_started`；不改写。
-4. **本应聘全部面试轮次**（按 `sequence_no` 升序，含取消/异常结束）：轮次元数据、当前安排摘要（密码只给 `has_meeting_password`）、上述邀约/转写/题纲/分析**状态**。
+4. **本应聘全部面试轮次**（按 `sequence_no` 升序，含取消/异常结束）：轮次元数据、当前安排摘要（密码只给 `has_meeting_password`）、各轮邀约/转写/题纲/分析**状态**。列表上的安排/邀约/转写/题纲/分析仍只跟 §3.4 展示轮次，不把详情里的「全部轮次」误当成列表摘要。
 5. 正文按需加载，复用既有入口，不在本模块复制写 API：
-   - 时间轴：`/applications/{applicationId}/interviews`
-   - 邀约抽屉：`InterviewInvitationDrawer` ← `GET /interview-rounds/{id}/invitations` 与详情 no-store
-   - 转写页：`/interview-rounds/{roundId}/transcript`
+   - 时间轴页面：`/applications/:applicationId/interviews`（路由名 `application-interviews`）；数据 `GET /api/v1/applications/{application_id}/interview-rounds`
+   - 邀约抽屉：`InterviewInvitationDrawer` ← `GET /api/v1/interview-rounds/{id}/invitations` 与详情 no-store
+   - 转写页：`/interview-rounds/:roundId/transcript`；数据走既有转写 API
    - 题纲抽屉：`InterviewQuestionSetDrawer`
    - 分析抽屉：`InterviewAnalysisDrawer`
 
@@ -243,7 +274,7 @@ EXISTS (
 
 | 层 | 职责 | 不负责 |
 |---|---|---|
-| repository 聚合查询 | EXISTS 筛选、白名单过滤、分页计数、按 `application_id` 批量取最新轮次与状态，避免 N+1 和面试官重复行 | 写库、迁移 |
+| repository 聚合查询 | EXISTS 筛选、白名单过滤、分页计数；按当前 `assigned` 语义 **批量**选取每条应聘的展示轮次及其安排/邀约/转写/题纲/分析状态（子查询或窗口函数一次完成）；JOIN 面试官表只用 EXISTS，禁止因多名面试官产生重复行；禁止列表页按行 N+1 查轮次 | 写库、迁移 |
 | service | 拼列表/详情 DTO、跨应聘隔离、状态派生、脱敏裁剪 | 改招聘状态、触发 AI、发信 |
 | API | `GET /candidate-center/applications`；`GET /candidate-center/candidates/{candidate_id}/applications/{application_id}`；`require_permission("recruitment.manage")`；详情 `no-store`；404/400 | `interview.execute` 分支 |
 | 前端菜单 | `AdminLayout` 在「简历库」旁增加「候选人中心」，仅 `recruitment.manage` | 面试官菜单 |
@@ -273,7 +304,7 @@ EXISTS (
 - `status` / `pipeline_status` / `job_id` 有索引。
 - **无** `ix_job_applications_candidate_id`：详情「其他应聘」按人查可能顺序扫。
 - **无** `updated_at`/`created_at` 索引：默认排序可能 filesort。
-- 禁止为消风险而加迁移。实现必须用子查询/窗口函数一次取「每应聘最大 `sequence_no`」，禁止对列表页逐行查轮次。
+- 禁止为消风险而加迁移。实现必须用子查询/窗口函数一次选取展示轮次：`assigned=true` 时在「至少一条 `InterviewRoundInterviewer`」的轮次中取最大 `sequence_no`；`assigned=false` 时在全部轮次中取最大 `sequence_no`。禁止对列表页逐行查轮次，禁止 INNER JOIN 面试官表造成重复行。
 
 ### 5.5 TDD 分批顺序与验收映射
 
@@ -281,11 +312,11 @@ EXISTS (
 
 | 批次 | 锁定内容 | 验收映射 |
 |---|---|---|
-| 1 查询 | EXISTS 默认筛选；取消/异常结束计入；多面试官不重复行；`assigned=false` 出全部 | repository 单测 |
+| 1 查询 | EXISTS 默认筛选；取消/异常结束计入；多面试官不重复行；`assigned=false` 出全部；展示轮次按 §3.4 随 `assigned` 切换 | repository 单测 |
 | 2 列表 API | 白名单、分页、关键词只打允许列、RBAC、列表无正文/密文/raw | API 单测 |
 | 3 详情 | `candidate_id+application_id` 404；评分/面试只取当前 `application_id`；其他应聘只有摘要；`no-store` | API + service 单测 |
 | 4 前端列表 | 菜单权限、默认已分配、切换全部、分页 | vitest |
-| 5 前端详情 | 复用时间轴/邀约/题纲/分析/转写/评分入口；不混岗位数据 | vitest |
+| 5 前端详情 | 复用时间轴页 `/applications/:applicationId/interviews`、评分报告页 `/applications/:applicationId/score-report`，以及既有邀约/题纲/分析抽屉与转写页；不混岗位数据 | vitest |
 
 回归：`backend pytest -q`、`frontend pnpm vitest run`、`frontend pnpm type-check`。
 
@@ -297,12 +328,12 @@ EXISTS (
 - 对象 404 句式与 `get_application_by_id(..., job_id=)` 的归属校验模式。
 - 岗位列表分页与关键词形态。
 - 岗位候选人 `JobApplicationOut` 的联系方式惯例。
-- 时间轴 `GET /applications/{id}/interview-rounds`、安排摘要脱敏。
+- 时间轴页面 `/applications/:applicationId/interviews`（`application-interviews`）；数据 `GET /api/v1/applications/{application_id}/interview-rounds`；安排摘要脱敏。
 - 邀约列表摘要 vs 详情 no-store。
 - 转写 `TranscriptListOut` vs 版本详情。
 - 题纲/分析 set 摘要 vs 版本详情抽屉。
-- 简历列表项元数据、`GET /applications/{id}/resume-score-report`（不含 `raw_output`）。
-- 前端 `InterviewInvitationDrawer`、`InterviewQuestionSetDrawer`、`InterviewAnalysisDrawer`、转写路由、评分报告页、简历校对页。
+- 简历列表项元数据；评分报告页 `/applications/:applicationId/score-report`（`score-report`）；数据 `GET /api/v1/applications/{application_id}/resume-score-report`（不含 `raw_output`）。
+- 前端 `InterviewInvitationDrawer`、`InterviewQuestionSetDrawer`、`InterviewAnalysisDrawer`、转写页 `/interview-rounds/:roundId/transcript`、简历校对页 `/resumes/:versionId/review`。
 
 ### 6.2 首批不做
 
@@ -312,5 +343,6 @@ EXISTS (
 
 - 无 TODO/TBD。
 - 列表行 = `JobApplication`，不按人去重，不复制数据。
-- 默认 EXISTS 筛选、取消/异常结束计入、跨岗位隔离、敏感数据边界均已锁定。
+- 默认 EXISTS 筛选、取消/异常结束计入、展示轮次随 `assigned` 切换、跨岗位隔离、敏感数据边界均已锁定。
+- 评分报告与面试时间轴的页面路径与数据 API 已与源码对齐，互不混用。
 - 状态只读真实库值；阶段 7 未走完的人工闭环保持未完成。
