@@ -1,5 +1,7 @@
 # 候选人中心实施计划
 
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
 **Goal：** 按已批准规格实现只读「候选人中心」：列表行是 `JobApplication`，默认 EXISTS 筛选已分配面试轮次，详情按 `candidate_id + application_id` 归属校验，复用既有评分报告页与面试时间轴页，不改招聘状态。
 
 **Architecture：** 新建只读聚合层（repository 一次查出列表/展示轮次 → service 派生状态并裁剪敏感字段 → API 仅 `recruitment.manage`）。前端新增菜单、列表、详情；正文跳转既有路由，不复制写 API、不内嵌邀约/题纲/分析抽屉。
@@ -18,6 +20,106 @@
 - `candidate_id` 与 `application_id` 不匹配 → 404 `detail="not found"`。
 - 禁止把其他 `JobApplication` 的面试或 `AiResult` 混进当前详情。
 - 稳定符号不得改名：`assigned_interview_exists`、`list_candidate_center_applications`、`get_candidate_center_application_detail`。
+
+## 源码证据（只读审计）
+
+### 1. FastAPI 查询白名单与 `extra="forbid"`
+
+**现状：** 仓库内 **尚无** 将 Pydantic 查询模型配合 `extra="forbid"` 用于 GET 列表的 endpoint。`extra="forbid"` 仅出现在 **请求/响应体** schema：
+
+- `backend/app/schemas/interview_ai_api.py`：`InterviewAIAPIModel` 基类 `ConfigDict(extra="forbid", ...)`
+- `backend/app/schemas/interview_ai.py`：Dify 输出校验 schema，同为 body 用
+
+既有列表 endpoint 一律使用 **扁平 `Query()` 参数**，未知 query 会被 FastAPI **静默忽略**，不会 400。示例：
+
+```79:93:backend/app/api/v1/endpoints/jobs.py
+@router.get("", response_model=JobListResponse)
+async def get_jobs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    ...
+    status_filter: str | None = Query(default=None, alias="status", max_length=16),
+    ...
+) -> JobListResponse:
+```
+
+**候选人中心锁定写法（Task 3）：** 列表 endpoint 引入首个查询模型依赖；schema 在 `CandidateCenterListQuery` 上设 `model_config = ConfigDict(extra="forbid", ...)`。endpoint 使用显式解析依赖（非裸 `Depends()` 默认 422）以保证规格要求的 **400**：
+
+```python
+from typing import Annotated
+from fastapi import Depends, HTTPException, Request, status
+from pydantic import ValidationError
+
+def parse_candidate_center_list_query(request: Request) -> CandidateCenterListQuery:
+    try:
+        return CandidateCenterListQuery.model_validate(dict(request.query_params))
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.errors()) from exc
+
+@router.get("/applications", response_model=CandidateCenterListResponse)
+async def list_candidate_center_applications_endpoint(
+    query: Annotated[CandidateCenterListQuery, Depends(parse_candidate_center_list_query)],
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_permission("recruitment.manage")),
+) -> CandidateCenterListResponse:
+    ...
+```
+
+白名单字段：`assigned`（默认 `True`）、`status`、`pipeline_status`、`job_id`、`keyword`、`page`、`page_size`、`sort`。`?foo=1` → Pydantic `extra` 校验失败 → 上述 wrapper → **400**。
+
+### 2. 简历评分 `result_type` 与 `get_current_ai_result`
+
+常量定义于 `backend/app/models/ai_task.py`：
+
+```24:24:backend/app/models/ai_task.py
+TASK_TYPE_RESUME_SCORE = "RESUME_SCORE"
+```
+
+既有调用（`backend/app/services/resumes.py`）：
+
+```python
+from app.models.ai_task import TASK_TYPE_RESUME_SCORE
+from app.repositories.resumes import get_current_ai_result
+
+result = await get_current_ai_result(
+    session, application_id=application_id, result_type=TASK_TYPE_RESUME_SCORE
+)
+```
+
+Repository 签名（`backend/app/repositories/resumes.py`）：
+
+```python
+async def get_current_ai_result(
+    session: AsyncSession,
+    *,
+    application_id: UUID,
+    result_type: str,
+) -> AiResult | None:
+```
+
+Task 2 service **必须**使用上述 import 与 keyword 参数；禁止硬编码 `"RESUME_SCORE"` 字符串或自造常量名。
+
+### 3. 详情全部轮次读取（无 N+1）
+
+既有只读批量能力：`app.repositories.interviews.list_rounds_for_application(session, application_id)` — 一次查询当前 `application_id` 下全部 `InterviewRound`，`order_by(InterviewRound.sequence_no.asc())`，`selectinload` 面试官与安排；**无** status 过滤，故 `CANCELLED` / `ENDED_ABNORMALLY` 均返回。
+
+```50:62:backend/app/repositories/interviews.py
+async def list_rounds_for_application(
+    session: AsyncSession, application_id: UUID
+) -> list[InterviewRound]:
+    result = await session.scalars(
+        select(InterviewRound)
+        .options(
+            selectinload(InterviewRound.interviewers),
+            selectinload(InterviewRound.schedules),
+        )
+        .where(InterviewRound.application_id == application_id)
+        .order_by(InterviewRound.sequence_no.asc())
+    )
+    return list(result.all())
+```
+
+**无** 按多个 `round_id` 批量读邀约/转写/题纲/分析的既有 repository。Task 2 在 `candidate_center` repository **新增只读批量查询**（例如 `list_round_status_rows(session, round_ids: list[UUID])` 一次 `WHERE round_id IN (...)`），service 用 `list_rounds_for_application` + 批量状态行拼详情；禁止对每轮调用 `list_messages_for_round` / `get_transcript_by_round_id` / `get_question_set_by_round` / `get_analysis_by_round` 循环。
 
 ## 稳定接口名
 
@@ -45,7 +147,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `backend/app/repositories/candidate_center.py` | EXISTS 筛选、展示轮次子查询、关键词/状态/分页 SQL；`assigned_interview_exists`、`list_candidate_center_application_rows`、`count_candidate_center_applications`、`get_candidate_center_application_row`、`list_other_applications_for_candidate` |
+| `backend/app/repositories/candidate_center.py` | EXISTS 筛选、展示轮次子查询、关键词/状态/分页 SQL；`assigned_interview_exists`、`list_candidate_center_application_rows`、`count_candidate_center_applications`、`get_candidate_center_application_row`、`list_other_applications_for_candidate`、**详情用** `list_round_status_rows`（批量邀约/转写/题纲/分析状态，无 N+1） |
 | `backend/app/schemas/candidate_center.py` | `CandidateCenterListQuery`、`CandidateCenterListItem`、`CandidateCenterListResponse`、`CandidateCenterDetailOut` 及简历/评分/轮次/其他应聘摘要子模型；`extra="forbid"` |
 | `backend/app/services/candidate_center.py` | 状态派生、评分摘要裁剪、跨应聘隔离、敏感字段拒绝；`list_candidate_center_applications`、`get_candidate_center_application_detail` |
 | `backend/app/api/v1/endpoints/candidate_center.py` | 两个 GET；`require_permission("recruitment.manage")`；详情 `Cache-Control: no-store`；404/400 映射 |
@@ -80,7 +182,7 @@
 | `backend/app/api/v1/endpoints/interview_ai.py` | `_NO_STORE = "no-store"` |
 | `backend/app/api/dependencies/auth.py` | `require_permission` → 403 `forbidden` |
 | `backend/app/schemas/job.py` | `JobListResponse` 形状 `{items,total,page,page_size}` |
-| `backend/app/schemas/interview_ai_api.py` | `extra="forbid"` 查询白名单写法 |
+| `backend/app/schemas/interview_ai_api.py` | body schema `extra="forbid"` 模式参考（**非** query 先例；列表 query 见上文「源码证据 §1」） |
 | `frontend/src/api/client.ts` | `baseURL: '/api/v1'` |
 | `frontend/src/api/resumes.ts` | `pipelineStatusLabel`；`getScoreReport` |
 | `frontend/src/api/interviews.ts` | `getInterviewTimeline` |
@@ -117,9 +219,11 @@
 | `test_display_round_assigned_false_is_max_sequence_any_round` | `assigned=false` 展示轮次子查询：`max(sequence_no)`，子查询内无面试官 EXISTS |
 | `test_keyword_sql_only_hits_allowed_columns` | keyword SQL 含 `candidates.name`、`candidates.phone`、`candidates.email`、`jobs.code`、`jobs.name` 的 `ILIKE`；不含 `extracted_text`、`standardized_text`、`raw_jd_text`、`question`、`quote` |
 | `test_status_and_pipeline_filters_are_equality` | `status` / `pipeline_status` / `job_id` 为等值谓词 |
-| `test_sort_whitelist_updated_at_and_created_at_desc` | `updated_at_desc` → `job_applications.updated_at DESC`；`created_at_desc` → `created_at DESC` |
+| `test_sort_whitelist_updated_at_and_created_at_desc` | `updated_at_desc` → `job_applications.updated_at DESC` 且其后 **`job_applications.id DESC`**；`created_at_desc` → `job_applications.created_at DESC` 且其后 **`job_applications.id DESC`**（稳定分页次排序） |
 | `test_pagination_uses_offset_limit` | `page=2, page_size=20` → `OFFSET 20` 且 `LIMIT 20`；count 语句无 OFFSET |
-| `test_list_selects_application_id_once` | SELECT 主键为 `job_applications.id`，无对面试官表的非 EXISTS JOIN |
+| `test_list_outer_query_from_job_applications` | list SQL 的 **FROM 主表** 为 `job_applications`（可 JOIN `candidates`/`jobs`）；**不得** FROM `interview_round_interviewers` 或 `interview_rounds` 作为主驱动表 |
+| `test_display_round_at_most_one_row_per_application` | 展示轮次通过 **标量子查询 / `LATERAL` / `ROW_NUMBER()` 窗口** 关联到外层 `job_applications.id`，compile 含 `PARTITION BY` 或等价「每 application 一行」结构；**禁止** 对 `InterviewRoundInterviewer` 做普通 `JOIN` 后再 `DISTINCT`/`GROUP BY` 去重 |
+| `test_list_selects_application_id_once` | SELECT 主键为 `job_applications.id`；除 EXISTS 子查询外，不含 `JOIN interview_round_interviewers` |
 
 运行（必须失败：模块不存在）：
 
@@ -131,6 +235,8 @@ cd backend
 ### GREEN
 
 实现 `assigned_interview_exists()` 返回规格 §3.1 的 `exists()` 子句。
+**列表 outer query 从 `JobApplication` 出发**：`list_candidate_center_application_rows` 以 `select(JobApplication, ...)` 为根，JOIN 候选人/岗位仅作筛选与投影；展示轮次 id 通过 **每 application 至多一行的子查询/窗口** 挂接，保证 `application_id` 不因多面试官重复。
+`sort` 白名单：`updated_at_desc` → `ORDER BY job_applications.updated_at DESC, job_applications.id DESC`；`created_at_desc` → `ORDER BY job_applications.created_at DESC, job_applications.id DESC`。
 `list_candidate_center_application_rows(..., assigned, status, pipeline_status, job_id, keyword, sort, page, page_size)` 一次 SELECT：应聘 + 候选人 + 岗位 + 展示轮次 id（按当前 `assigned` 语义的子查询/窗口函数关联），禁止 N+1。
 `count_candidate_center_applications` 使用同一 WHERE。
 非法 `sort` 由 service 在进 repository 前拒绝；repository 只接收已校验枚举。
@@ -164,6 +270,11 @@ cd backend
 | `test_detail_mismatch_raises_not_found` | `candidate_id` 与 application 不一致 → `CandidateNotFoundError` |
 | `test_other_applications_are_summaries_only` | 其他应聘只有 `application_id/job_id/job_name/job_code/status/pipeline_status/created_at`；其 `round_id` / `result_id` 不出现在当前详情的面试或评分块 |
 | `test_detail_rounds_stay_on_current_application` | 详情轮次列表每项 `application_id` 均为当前 id |
+| `test_detail_returns_all_rounds_ordered_by_sequence_no` | 桩当前应聘含 seq=1/2/3 三轮；详情 `rounds` 长度 3；`sequence_no` 严格升序 `[1,2,3]` |
+| `test_detail_keeps_cancelled_and_ended_abnormally_rounds` | 桩含 `status=CANCELLED` 与 `status=ENDED_ABNORMALLY` 轮次；详情 `rounds` 均保留且 `status` 原值 |
+| `test_detail_per_round_statuses_from_that_round_only` | 两轮桩：seq=1 邀约 `confirmed`、seq=2 邀约 `none`；详情 seq=1 项 `invitation_status=="confirmed"`，seq=2 项 `"none"`；转写/题纲/分析同理按 round_id 隔离 |
+| `test_detail_excludes_other_application_rounds` | 桩 `list_rounds_for_application` 仅返回当前 application_id；`list_round_status_rows` 的 round_ids 均属于当前应聘；另一 application 的 round_id 不在 `rounds` 中 |
+| `test_detail_loads_rounds_without_n_plus_one` | `AsyncMock` 断言：`list_rounds_for_application` 调用 1 次；`list_round_status_rows` 调用 1 次（传入当前全部 round_id）；禁止循环调用 `get_question_set_by_round` 等 per-round repo |
 | `test_list_query_rejects_unknown_sort` | `sort="score_desc"` → 校验错误，不调用 repository |
 | `test_does_not_use_interview_task_state_as_filter` | service 源码（`inspect.getsource`）不含把 `interview_task_state` 当作 assigned 条件 |
 
@@ -178,10 +289,21 @@ cd backend
 
 ### GREEN
 
-Schema：`CandidateCenterListQuery` 字段仅 `assigned: bool = True`、`status`、`pipeline_status`、`job_id`、`keyword`、`page`、`page_size`、`sort`；`model_config extra="forbid"`。
-`status` 仅 `APPLICATION_STATUSES`；`pipeline_status` 仅 `PIPELINE_STATUSES`；`sort` 仅 `updated_at_desc` / `created_at_desc`。
+Schema：`CandidateCenterListQuery` 字段仅 `assigned: bool = True`、`status`、`pipeline_status`、`job_id`、`keyword`、`page`、`page_size`、`sort`；`model_config = ConfigDict(extra="forbid")`（与 `interview_ai_api.InterviewAIAPIModel` 同模式，但用于 query 解析）。
+`status` 仅 `APPLICATION_STATUSES`（`app.models.candidate`）；`pipeline_status` 仅 `PIPELINE_STATUSES`；`sort` 仅 `updated_at_desc` / `created_at_desc`。
 Service 派生函数名锁定：`derive_invitation_status`、`derive_transcript_status`、`derive_question_status`、`derive_analysis_status`、`build_score_summary`。分析 STALE 规则写在 `derive_analysis_status` 内（与规格 `_is_stale` 相同），不 import `interview_analyses._is_stale`。
-评分只读 `get_current_ai_result(..., result_type=TASK_TYPE_RESUME_SCORE)`。
+详情轮次：`rounds = await list_rounds_for_application(session, application_id)`（`app.repositories.interviews`）；批量状态行 `await list_round_status_rows(session, round_ids=[r.id for r in rounds])`（`app.repositories.candidate_center`，新增只读）；对每轮调用上述 `derive_*`，禁止 per-round N+1。
+评分只读：
+
+```python
+from app.models.ai_task import TASK_TYPE_RESUME_SCORE
+from app.repositories.resumes import get_current_ai_result
+
+await get_current_ai_result(
+    session, application_id=application_id, result_type=TASK_TYPE_RESUME_SCORE
+)
+```
+
 详情简历摘要只映射 `ResumeVersion` 元数据，不读 `extracted_text`。
 
 再跑同上命令通过后提交 Task 2。
@@ -203,9 +325,11 @@ API 测试复制 `test_interviews.py` 的 `_user`、`_client_for`、`lifespan_pa
 | `test_list_requires_recruitment_manage` | 无权限或仅 `interview.execute` → 403，`detail=="forbidden"`；`list_candidate_center_applications` 未被调用 |
 | `test_list_manage_ok_defaults_assigned_true` | `GET /api/v1/candidate-center/applications` 无 query 时，service 收到 `assigned is True`、`page==1`、`page_size==20`；200 且 body 有 `items/total/page/page_size` |
 | `test_list_assigned_false_forwards_flag` | `?assigned=false` 时 service `assigned is False` |
-| `test_list_rejects_unknown_query_param` | `?foo=1` → 400 |
-| `test_list_rejects_invalid_status` | `?status=interviewing` → 400（那是 pipeline 值，不是 `JobApplication.status`） |
-| `test_list_rejects_invalid_pipeline_status` | `?pipeline_status=in_progress` → 400 |
+| `test_list_rejects_unknown_query_param` | `GET /api/v1/candidate-center/applications?foo=1` → **400**（覆盖 `parse_candidate_center_list_query` + `extra="forbid"`） |
+| `test_list_rejects_unknown_query_param_with_valid_fields` | `?assigned=true&foo=1` → **400**（白名单字段并存时仍拒未知键） |
+| `test_list_rejects_invalid_status` | `?status=interviewing` → **400**（那是 pipeline 值，不是 `JobApplication.status`） |
+| `test_list_rejects_invalid_pipeline_status` | `?pipeline_status=in_progress` → **400** |
+| `test_list_rejects_invalid_sort` | `?sort=score_desc` → **400** |
 | `test_list_does_not_set_no_store` | 列表 200 的 `Cache-Control` 不是 `no-store` |
 | `test_list_body_has_no_sensitive_keys` | 响应 JSON 字符串不含 `extracted_text`、`raw_output`、`question_encrypted`、`quote` |
 | `test_detail_requires_recruitment_manage` | 仅 `interview.execute` → 403 |
@@ -226,7 +350,25 @@ cd backend
 ### GREEN
 
 `APIRouter(prefix="/candidate-center", tags=["candidate-center"])`。
-列表用 `CandidateCenterListQuery` 作依赖（forbid extra）。
+列表 endpoint 声明（锁定，与 RED 测试一致）：
+
+```python
+def parse_candidate_center_list_query(request: Request) -> CandidateCenterListQuery:
+    try:
+        return CandidateCenterListQuery.model_validate(dict(request.query_params))
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.errors()) from exc
+
+@router.get("/applications", response_model=CandidateCenterListResponse)
+async def list_candidate_center_applications_endpoint(
+    query: Annotated[CandidateCenterListQuery, Depends(parse_candidate_center_list_query)],
+    session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(require_permission("recruitment.manage")),
+) -> CandidateCenterListResponse:
+    return await list_candidate_center_applications(session, query=query)
+```
+
+`CandidateCenterListQuery` 白名单：`assigned`、`status`、`pipeline_status`、`job_id`、`keyword`、`page`、`page_size`、`sort`；`extra="forbid"`。不得回退为扁平 `Query()`（会静默忽略未知参数，违反规格 §3.3 / §5.2）。
 404 映射照抄 `endpoints/candidates.py`：`CandidateNotFoundError` → `HTTPException(404, detail="not found")`。
 详情：`response.headers["Cache-Control"] = "no-store"`。
 `router.py` 增加 `include_router(candidate_center.router)`，与 `candidates.router` 并列。
@@ -406,15 +548,17 @@ cd ..\backend
 | §1.2 无迁移新表、不改状态、不伪造完成 | 文件映射禁止 alembic/models；Task 2/7 缺失即缺失 |
 | §3.1 EXISTS 默认 assigned=true | Task 1/3/6 |
 | §3.2 取消/异常结束计入 | Task 1 SQL 不排除；Task 2 cancelled 展示轮次 |
-| §3.3 白名单筛选分页关键词 | Task 1 compile；Task 2/3 400 |
-| §3.4 展示轮次随 assigned；状态只跟展示轮次 | Task 1 子查询；Task 2 派生 |
+| §3.3 白名单筛选分页关键词；未知参数 400 | Task 1 compile；Task 2 schema 校验；Task 3 `parse_candidate_center_list_query` + RED 400 测试 |
+| §3.4 展示轮次随 assigned；状态只跟展示轮次 | Task 1 子查询/窗口；Task 2 派生 |
 | §3.4 列表无正文密文 raw | Task 2/3 键集 |
 | §4.1 candidate+application 404 | Task 2/3 |
-| §4.2 简历摘要、评分摘要、全部轮次、no-store | Task 2/3/7 |
+| §4.2 简历摘要、评分摘要、**全部轮次**（sequence_no 升序、含取消/异常）、no-store | Task 2 `list_rounds_for_application` + 批量状态；Task 3/7 |
+| §4.2 每轮状态只来自该轮；不混其他 application | Task 2 详情隔离测试 |
 | §4.2 复用 score-report 页与 interviews 页（非数据 path 混用） | Task 7 |
 | §4.3 其他应聘只摘要 | Task 2/7 |
 | §5.1 稳定符号与职责切分 | 稳定接口名表 |
-| §5.4 批量展示轮次、无 N+1、无面试官重复行 | Task 1 |
+| §5.3 稳定分页次排序 | Task 1 `job_applications.id DESC` compile 测试 |
+| §5.4 批量展示轮次、无 N+1、无面试官重复行；outer FROM JobApplication | Task 1 outer query + 窗口/子查询测试；Task 2 批量 `list_round_status_rows` |
 | §5.5 五批 TDD | Task 1–3 后端；Task 6–7 前端；Task 4/8 回归 |
 | §6.2 首批不做写操作/Dify/Offer | 提交边界 |
 
