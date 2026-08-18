@@ -48,6 +48,7 @@ from app.services.crypto import CIPHER_PREFIX, decrypt_secret
 from app.services.interview_ai_validation import AIOutputValidationError
 from app.services.interviews import (
     InterviewConflictError,
+    InterviewForbiddenError,
     InterviewIdempotencyConflictError,
     InterviewNotFoundError,
     InterviewOptimisticLockError,
@@ -739,21 +740,24 @@ async def test_manage_can_generate_unassigned_round(
 
 
 @pytest.mark.asyncio
-async def test_assigned_execute_can_generate(
+async def test_assigned_execute_cannot_generate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.services.interview_questions import request_question_generation
 
     round_ = _make_round()
     env = _patch_base(monkeypatch, round_, assigned=True)
-    task = await request_question_generation(
-        env.session,
-        round_id=round_.id,
-        idempotency_key="gen-exec",
-        actor=_actor(manage=False, execute=True),
-        request_context=_ctx(),
-    )
-    assert task.business_id == round_.id
+    with pytest.raises(InterviewForbiddenError, match="forbidden"):
+        await request_question_generation(
+            env.session,
+            round_id=round_.id,
+            idempotency_key="gen-exec",
+            actor=_actor(manage=False, execute=True),
+            request_context=_ctx(),
+        )
+    assert env.added_tasks == []
+    assert env.added_idempotency == []
+    env.session.commit.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,7 @@ from app.services.crypto import CIPHER_PREFIX, EncryptionError, encrypt_secret
 from app.services.interview_ai_validation import AIOutputValidationError
 from app.services.interviews import (
     InterviewConflictError,
+    InterviewForbiddenError,
     InterviewIdempotencyConflictError,
     InterviewNotFoundError,
     InterviewValidationError,
@@ -705,19 +706,21 @@ async def test_manage_can_request_analysis(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_assigned_execute_can_request(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_assigned_execute_cannot_request(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.interview_analyses import request_analysis_generation
 
     round_ = _make_round()
     env = _patch_base(monkeypatch, round_, assigned=True)
-    task = await request_analysis_generation(
-        env.session,
-        round_id=round_.id,
-        idempotency_key="a-exec",
-        actor=_actor(manage=False, execute=True),
-        request_context=_ctx(),
-    )
-    assert task.version_id == env.transcript.current_confirmed_version_id
+    with pytest.raises(InterviewForbiddenError, match="forbidden"):
+        await request_analysis_generation(
+            env.session,
+            round_id=round_.id,
+            idempotency_key="a-exec",
+            actor=_actor(manage=False, execute=True),
+            request_context=_ctx(),
+        )
+    assert env.added_tasks == []
+    env.session.commit.assert_not_called()
 
 
 @pytest.mark.asyncio

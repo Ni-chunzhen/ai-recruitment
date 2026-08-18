@@ -10,7 +10,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies.auth import get_db_session, require_any_permission
+from app.api.dependencies.auth import (
+    get_db_session,
+    require_any_permission,
+    require_permission,
+)
 from app.models import User
 from app.models.ai_task import AITask
 from app.schemas.interview_ai_api import (
@@ -52,6 +56,7 @@ router = APIRouter(tags=["interview-ai"])
 logger = logging.getLogger(__name__)
 
 _ROUND_ACCESS = require_any_permission("recruitment.manage", "interview.execute")
+_MANAGE_WRITE = require_permission("recruitment.manage")
 _NO_STORE = "no-store"
 DispatchFn = Callable[..., Awaitable[None]]
 
@@ -115,7 +120,7 @@ async def generate_question_set(
     payload: InterviewAIGenerateRequest,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(_ROUND_ACCESS),
+    actor: User = Depends(_MANAGE_WRITE),
 ) -> InterviewAIGenerateOut:
     try:
         task = await request_question_generation(
@@ -183,7 +188,7 @@ async def create_question_set_version(
     request: Request,
     response: Response,
     session: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(_ROUND_ACCESS),
+    actor: User = Depends(_MANAGE_WRITE),
 ) -> InterviewQuestionVersionDetailOut:
     response.headers["Cache-Control"] = _NO_STORE
     try:
@@ -211,7 +216,7 @@ async def confirm_question_set_endpoint(
     payload: InterviewQuestionConfirmRequest,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(_ROUND_ACCESS),
+    actor: User = Depends(_MANAGE_WRITE),
 ) -> InterviewQuestionSetOut:
     try:
         summary = await confirm_question_set(
@@ -238,7 +243,7 @@ async def generate_analysis(
     payload: InterviewAIGenerateRequest,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-    actor: User = Depends(_ROUND_ACCESS),
+    actor: User = Depends(_MANAGE_WRITE),
 ) -> InterviewAIGenerateOut:
     try:
         task = await request_analysis_generation(

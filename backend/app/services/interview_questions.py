@@ -87,6 +87,7 @@ from app.services.interview_ai_validation import (
 )
 from app.services.interviews import (
     InterviewConflictError,
+    InterviewForbiddenError,
     InterviewIdempotencyConflictError,
     InterviewOptimisticLockError,
     InterviewValidationError,
@@ -211,6 +212,14 @@ async def _assert_can_access_round(
     raise InterviewNotFoundError("interview round not found")
 
 
+async def _assert_can_mutate_round(
+    session: AsyncSession, *, round_: InterviewRound, actor: User
+) -> None:
+    await _assert_can_access_round(session, round_=round_, actor=actor)
+    if not await _has_permission(actor, "recruitment.manage"):
+        raise InterviewForbiddenError("forbidden")
+
+
 def _require_mutable_status(round_: InterviewRound) -> None:
     if round_.status not in ALLOWED_QUESTION_MUTATION_STATUSES:
         raise InterviewValidationError(
@@ -307,7 +316,7 @@ async def _load_round_for_mutation(
     round_ = await get_round_for_update(session, round_id)
     if round_ is None:
         raise InterviewNotFoundError("interview round not found")
-    await _assert_can_access_round(session, round_=round_, actor=actor)
+    await _assert_can_mutate_round(session, round_=round_, actor=actor)
     await _load_application(session, round_.application_id)
     _require_mutable_status(round_)
     return round_

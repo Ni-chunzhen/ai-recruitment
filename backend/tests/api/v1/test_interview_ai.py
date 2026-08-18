@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -311,7 +312,7 @@ def test_api_module_has_no_hire_offer_or_dify_raw(lifespan_patches) -> None:
         assert needle not in lowered
 
 
-@pytest.mark.parametrize("code", ("recruitment.manage", "interview.execute"))
+@pytest.mark.parametrize("code", ("recruitment.manage",))
 def test_question_generate_202_queued_after_commit(lifespan_patches, code) -> None:
     client, session = _client_for(_user(code))
     calls: list[str] = []
@@ -385,18 +386,22 @@ def test_question_generate_dispatch_failure_is_pending_dispatch(
     assert "Dify exploded" not in (response.text or "")
 
 
-def test_unassigned_execute_generate_is_404(lifespan_patches) -> None:
-    client, _session = _client_for(_user("interview.execute"))
+def test_unassigned_execute_generate_is_403_not_404(lifespan_patches) -> None:
+    client, session = _client_for(_user("interview.execute"))
     with patch(
         f"{ENDPOINT}.request_question_generation",
+        new_callable=AsyncMock,
         side_effect=InterviewNotFoundError("interview round not found"),
-    ):
+    ) as mocked:
         response = client.post(
             f"/api/v1/interview-rounds/{ROUND_ID}/question-set/generate",
             json={"idempotency_key": "gen-404"},
         )
-    assert response.status_code == 404
-    assert response.json()["detail"] == "not found"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "forbidden"
+    mocked.assert_not_awaited()
+    mocked.assert_not_called()
+    session.commit.assert_not_called()
     _assert_no_sensitive(response.json())
 
 
@@ -529,7 +534,7 @@ def test_confirm_stale_current_is_409(lifespan_patches) -> None:
     assert response.status_code == 409
 
 
-@pytest.mark.parametrize("code", ("recruitment.manage", "interview.execute"))
+@pytest.mark.parametrize("code", ("recruitment.manage",))
 def test_analysis_generate_202_commit_before_dispatch(lifespan_patches, code) -> None:
     client, session = _client_for(_user(code))
     calls: list[str] = []
@@ -655,3 +660,147 @@ def test_analysis_cross_round_version_is_404(lifespan_patches) -> None:
             f"/api/v1/interview-rounds/{ROUND_ID}/analysis/versions/{uuid4()}"
         )
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body", "service_name", "dispatch_name"),
+    (
+        (
+            "post",
+            f"/api/v1/interview-rounds/{ROUND_ID}/question-set/generate",
+            {"idempotency_key": "exec-gen"},
+            "request_question_generation",
+            "dispatch_persisted_question_generation_task",
+        ),
+        (
+            "post",
+            f"/api/v1/interview-rounds/{ROUND_ID}/question-set/versions",
+            _edit_body(),
+            "create_manual_question_version",
+            None,
+        ),
+        (
+            "post",
+            f"/api/v1/interview-rounds/{ROUND_ID}/question-set/confirm",
+            {
+                "idempotency_key": "exec-confirm",
+                "expected_current_version_id": str(VERSION_ID),
+            },
+            "confirm_question_set",
+            None,
+        ),
+        (
+            "post",
+            f"/api/v1/interview-rounds/{ROUND_ID}/analysis/generate",
+            {"idempotency_key": "exec-an"},
+            "request_analysis_generation",
+            "dispatch_persisted_analysis_generation_task",
+        ),
+    ),
+)
+def test_assigned_execute_cannot_write_stage8_ai(
+    lifespan_patches,
+    method: str,
+    path: str,
+    body: dict,
+    service_name: str,
+    dispatch_name: str | None,
+) -> None:
+    client, session = _client_for(_user("interview.execute"))
+    service = AsyncMock(
+        return_value=_task(task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE)
+    )
+    dispatch = AsyncMock() if dispatch_name is not None else None
+    with ExitStack() as stack:
+        stack.enter_context(patch(f"{ENDPOINT}.{service_name}", new=service))
+        if dispatch_name is not None:
+            stack.enter_context(patch(f"{ENDPOINT}.{dispatch_name}", new=dispatch))
+        response = getattr(client, method)(path, json=body)
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"] == "forbidden"
+    service.assert_not_awaited()
+    service.assert_not_called()
+    session.commit.assert_not_called()
+    if dispatch is not None:
+        dispatch.assert_not_awaited()
+        dispatch.assert_not_called()
+    _assert_no_sensitive(response.json())
+
+
+def test_assigned_execute_can_read_question_and_analysis(lifespan_patches) -> None:
+    client, _session = _client_for(_user("interview.execute"))
+    with (
+        patch(
+            f"{ENDPOINT}.list_question_versions",
+            new_callable=AsyncMock,
+            return_value=_question_set(),
+        ),
+        patch(
+            f"{ENDPOINT}.get_question_version_detail",
+            new_callable=AsyncMock,
+            return_value=_question_detail(),
+        ),
+        patch(
+            f"{ENDPOINT}.list_analysis_versions",
+            new_callable=AsyncMock,
+            return_value=_analysis_set(stale=True),
+        ),
+        patch(
+            f"{ENDPOINT}.get_analysis_version_detail",
+            new_callable=AsyncMock,
+            return_value=_analysis_detail(stale=True),
+        ),
+    ):
+        list_q = client.get(f"/api/v1/interview-rounds/{ROUND_ID}/question-set")
+        detail_q = client.get(
+            f"/api/v1/interview-rounds/{ROUND_ID}/question-set/versions/{VERSION_ID}"
+        )
+        list_a = client.get(f"/api/v1/interview-rounds/{ROUND_ID}/analysis")
+        detail_a = client.get(
+            f"/api/v1/interview-rounds/{ROUND_ID}/analysis/versions/{VERSION_ID}"
+        )
+    assert list_q.status_code == 200
+    assert detail_q.status_code == 200
+    assert list_a.status_code == 200
+    assert detail_a.status_code == 200
+    assert list_q.json()["versions"][0]["question_count"] == 1
+    assert "items" not in list_q.json()
+    assert detail_q.json()["items"][0]["question"] == SECRET_QUESTION
+    assert list_a.json()["versions"][0]["is_stale"] is True
+    assert "overall_summary" not in list_a.json()["versions"][0]
+    assert detail_a.json()["dimensions"][0]["analysis"] == SECRET_ANALYSIS
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        f"/api/v1/interview-rounds/{ROUND_ID}/question-set",
+        f"/api/v1/interview-rounds/{ROUND_ID}/question-set/versions/{VERSION_ID}",
+        f"/api/v1/interview-rounds/{ROUND_ID}/analysis",
+        f"/api/v1/interview-rounds/{ROUND_ID}/analysis/versions/{VERSION_ID}",
+    ),
+)
+def test_unassigned_execute_get_is_object_404(lifespan_patches, path: str) -> None:
+    client, _session = _client_for(_user("interview.execute"))
+    with (
+        patch(
+            f"{ENDPOINT}.list_question_versions",
+            side_effect=InterviewNotFoundError("interview round not found"),
+        ),
+        patch(
+            f"{ENDPOINT}.get_question_version_detail",
+            side_effect=InterviewNotFoundError("interview round not found"),
+        ),
+        patch(
+            f"{ENDPOINT}.list_analysis_versions",
+            side_effect=InterviewNotFoundError("interview round not found"),
+        ),
+        patch(
+            f"{ENDPOINT}.get_analysis_version_detail",
+            side_effect=InterviewNotFoundError("interview round not found"),
+        ),
+    ):
+        response = client.get(path)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "not found"
+    _assert_no_sensitive(response.json())

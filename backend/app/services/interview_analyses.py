@@ -91,6 +91,7 @@ from app.services.interview_ai_validation import (
 )
 from app.services.interviews import (
     InterviewConflictError,
+    InterviewForbiddenError,
     InterviewIdempotencyConflictError,
     InterviewValidationError,
 )
@@ -242,6 +243,14 @@ async def _assert_can_access_round(
     raise InterviewNotFoundError("interview round not found")
 
 
+async def _assert_can_mutate_round(
+    session: AsyncSession, *, round_: InterviewRound, actor: User
+) -> None:
+    await _assert_can_access_round(session, round_=round_, actor=actor)
+    if not await _has_permission(actor, "recruitment.manage"):
+        raise InterviewForbiddenError("forbidden")
+
+
 def _canonical_hash(payload: dict[str, Any]) -> str:
     def _strip(value: Any) -> Any:
         if isinstance(value, dict):
@@ -329,7 +338,7 @@ async def _load_round_for_mutation(
     round_ = await get_round_for_update(session, round_id)
     if round_ is None:
         raise InterviewNotFoundError("interview round not found")
-    await _assert_can_access_round(session, round_=round_, actor=actor)
+    await _assert_can_mutate_round(session, round_=round_, actor=actor)
     await _load_application(session, round_.application_id)
     return round_
 
