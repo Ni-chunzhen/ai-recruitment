@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     CELERY_BROKER_URL: str = ""
+    celery_sensitive_queue_name: str = Field(
+        default="ai_sensitive",
+        validation_alias="CELERY_SENSITIVE_QUEUE_NAME",
+    )
     AI_PROVIDER: str = "mock"
     DIFY_API_BASE_URL: str = ""
     dify_api_key_secret: SecretStr = Field(
@@ -99,6 +103,13 @@ class Settings(BaseSettings):
 
     RESUME_UPLOAD_MAX_FILES: int = 5
     RESUME_UPLOAD_MAX_BYTES: int = 10 * 1024 * 1024
+
+    @field_validator("celery_sensitive_queue_name", mode="before")
+    @classmethod
+    def _normalize_celery_sensitive_queue_name(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "ai_sensitive"
+        return value
 
     @property
     def database_url(self) -> str:

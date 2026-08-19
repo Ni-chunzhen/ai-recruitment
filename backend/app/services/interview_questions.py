@@ -77,7 +77,7 @@ from app.schemas.interview_ai import (
     InterviewQuestionGenerateResult,
 )
 from app.services.ai_providers.base import validate_ai_result
-from app.services.ai_tasks import enqueue_ai_task
+from app.services.ai_tasks import enqueue_sensitive_question_task
 from app.services.audit import RequestContext, record_audit
 from app.services.crypto import EncryptionError, decrypt_secret, encrypt_secret
 from app.services.interview_ai_validation import (
@@ -787,7 +787,7 @@ async def dispatch_persisted_question_generation_task(
         raise InterviewNotFoundError("ai task not found")
     if task.status != AI_TASK_STATUS_PENDING:
         raise InterviewValidationError("question generation task is not pending")
-    enqueue_ai_task(task.id)
+    enqueue_sensitive_question_task(task.id)
 
 
 async def load_question_provider_input(

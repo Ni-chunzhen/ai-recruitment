@@ -836,7 +836,7 @@ async def test_provider_retryable_failure_reuses_original_snapshot(
         http_status=502,
     )
     captured = await _bind_stage8_mocks(monkeypatch, task=task, outcome=outcome)
-    monkeypatch.setattr(worker.process_ai_task, "apply_async", fake_apply_async)
+    monkeypatch.setattr(worker.process_sensitive_ai_task, "apply_async", fake_apply_async)
 
     result = await worker._handle_process(session, task.id)
 

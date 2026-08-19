@@ -563,7 +563,7 @@ def _patch_base(
         f"{MODULE}.find_task_by_input_snapshot_hash", fake_find_by_hash
     )
     monkeypatch.setattr(f"{MODULE}.get_ai_task_by_id", fake_get_ai_task)
-    monkeypatch.setattr(f"{MODULE}.enqueue_ai_task", enqueue)
+    monkeypatch.setattr(f"{MODULE}.enqueue_sensitive_question_task", enqueue)
     monkeypatch.setattr(f"{MODULE}.get_question_set_by_round", fake_get_set)
     monkeypatch.setattr(
         f"{MODULE}.get_question_set_for_update", fake_get_set_for_update
@@ -1100,7 +1100,8 @@ def test_request_question_generation_source_does_not_enqueue() -> None:
     request_source = inspect.getsource(request_question_generation)
     dispatch_source = inspect.getsource(dispatch_persisted_question_generation_task)
     assert "enqueue_ai_task" not in request_source
-    assert "enqueue_ai_task" in dispatch_source
+    assert "enqueue_sensitive_question_task" in dispatch_source
+    assert "enqueue_ai_task" not in dispatch_source
 
 
 @pytest.mark.asyncio

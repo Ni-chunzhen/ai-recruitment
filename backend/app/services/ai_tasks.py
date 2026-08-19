@@ -17,6 +17,7 @@ from app.models.ai_task import (
     AI_TASK_STATUS_PENDING,
     AI_TASK_STATUS_SUCCEEDED,
     BUSINESS_TYPE_JOB,
+    TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_JD_PARSE,
     TASK_TYPE_SCORE_DIMENSION_RECOMMEND,
     TASK_TYPES,
@@ -70,6 +71,13 @@ def enqueue_ai_task(task_id: UUID, *, countdown: int = 0) -> None:
     from app.workers.ai_tasks import process_ai_task
 
     process_ai_task.apply_async(args=[str(task_id)], countdown=countdown)
+
+
+def enqueue_sensitive_question_task(task_id: UUID, *, countdown: int = 0) -> None:
+    """Enqueue INTERVIEW_QUESTION_GENERATE onto the sensitive Celery task."""
+    from app.workers.ai_tasks import process_sensitive_ai_task
+
+    process_sensitive_ai_task.apply_async(args=[str(task_id)], countdown=countdown)
 
 
 def to_ai_task_out(task: AITask, *, include_attempts: bool = True) -> AITaskSummaryOut:
@@ -336,7 +344,10 @@ async def retry_ai_task(
     )
     await session.commit()
 
-    enqueue_ai_task(task.id)
+    if task.task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        enqueue_sensitive_question_task(task.id)
+    else:
+        enqueue_ai_task(task.id)
     refreshed = await get_ai_task_by_id(session, task.id)
     assert refreshed is not None
     return to_ai_task_out(refreshed)

@@ -40,7 +40,7 @@ from app.services.ai_providers.base import (
 )
 from app.services.ai_providers.dify import extract_dify_run_ids, run_dify
 from app.services.ai_providers.mock import run_mock
-from app.services.audit import RequestContext
+from app.services.audit import RequestContext, record_audit
 from app.services.crypto import encrypt_secret
 from app.services.interview_ai_validation import AIOutputValidationError
 from app.services.interviews import InterviewValidationError
@@ -299,6 +299,13 @@ def _worker_request_context(task: AITask) -> RequestContext:
     return RequestContext(request_id=f"ai-task:{task.id}")
 
 
+def _enqueue_retry_for_task(task: AITask, *, countdown: int) -> None:
+    if task.task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        process_sensitive_ai_task.apply_async(args=[str(task.id)], countdown=countdown)
+    else:
+        process_ai_task.apply_async(args=[str(task.id)], countdown=countdown)
+
+
 async def _process_ai_task_async(task_id: UUID) -> dict:
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
@@ -308,6 +315,90 @@ async def _process_ai_task_async(task_id: UUID) -> dict:
             return await _handle_process(session, task_id)
     finally:
         await engine.dispose()
+
+
+async def _maybe_reroute_question_from_default(task_id: UUID) -> dict | None:
+    """If task is question-generate, reroute once to sensitive entry (pre-claim)."""
+    settings = get_settings()
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_factory() as session:
+            task = await get_ai_task_by_id(session, task_id, with_attempts=False)
+            if task is None or task.task_type != TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+                return None
+            try:
+                process_sensitive_ai_task.apply_async(
+                    args=[str(task_id)], countdown=0
+                )
+            except Exception as exc:
+                await record_audit(
+                    session,
+                    action="ai_task.sensitive_reroute_failed",
+                    result="failure",
+                    resource_type="ai_task",
+                    request_context=_worker_request_context(task),
+                    actor_user_id=None,
+                    resource_id=str(task.id),
+                    changes={
+                        "ai_task_id": str(task.id),
+                        "task_type": task.task_type,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                await session.commit()
+                logger.warning(
+                    "sensitive reroute failed for ai task %s type=%s error_type=%s",
+                    task.id,
+                    task.task_type,
+                    type(exc).__name__,
+                )
+                return {
+                    "status": "reroute_failed",
+                    "reason": "question_generate_requires_sensitive_queue",
+                    "task_id": str(task_id),
+                    "error_type": type(exc).__name__,
+                }
+            return {
+                "status": "rerouted",
+                "reason": "question_generate_requires_sensitive_queue",
+                "task_id": str(task_id),
+            }
+    finally:
+        await engine.dispose()
+
+
+async def _process_default_ai_task_async(task_id: UUID) -> dict:
+    rerouted = await _maybe_reroute_question_from_default(task_id)
+    if rerouted is not None:
+        return rerouted
+    return await _process_ai_task_async(task_id)
+
+
+async def _process_sensitive_ai_task_async(task_id: UUID) -> dict:
+    settings = get_settings()
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+    try:
+        async with session_factory() as session:
+            task = await get_ai_task_by_id(session, task_id, with_attempts=False)
+            if task is None:
+                logger.warning("ai task %s not found (sensitive)", task_id)
+                return {"status": "missing"}
+            if task.task_type != TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+                logger.info(
+                    "sensitive entry rejected task %s type=%s",
+                    task_id,
+                    task.task_type,
+                )
+                return {
+                    "status": "rejected",
+                    "reason": "unsupported_task_type",
+                    "task_type": task.task_type,
+                }
+    finally:
+        await engine.dispose()
+    return await _process_ai_task_async(task_id)
 
 
 async def _after_task_success(
@@ -601,7 +692,7 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
         task.finished_at = None
         task.updated_at = finished
         await session.commit()
-        process_ai_task.apply_async(args=[str(task.id)], countdown=countdown)
+        _enqueue_retry_for_task(task, countdown=countdown)
         return {
             "status": AI_TASK_STATUS_PENDING,
             "retry_countdown": countdown,
@@ -696,7 +787,12 @@ async def _purge_expired_raw_async() -> dict:
 
 @celery_app.task(name="app.workers.ai_tasks.process_ai_task", bind=True)
 def process_ai_task(self, task_id: str) -> dict:  # noqa: ARG001
-    return asyncio.run(_process_ai_task_async(UUID(task_id)))
+    return asyncio.run(_process_default_ai_task_async(UUID(task_id)))
+
+
+@celery_app.task(name="app.workers.ai_tasks.process_sensitive_ai_task", bind=True)
+def process_sensitive_ai_task(self, task_id: str) -> dict:  # noqa: ARG001
+    return asyncio.run(_process_sensitive_ai_task_async(UUID(task_id)))
 
 
 @celery_app.task(name="app.workers.ai_tasks.purge_expired_ai_raw_payloads")
