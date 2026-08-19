@@ -1,0 +1,396 @@
+app:
+  description: 阶段8·面试题纲生成。仅根据岗位 JD、已确认简历与评分维度生成结构化面试题纲；不进行招聘决策、不生成 Offer、不发送通知。导入后请在 LLM 节点重选本环境模型。
+  icon: 📝
+  icon_background: '#F3E8FF'
+  icon_type: emoji
+  mode: workflow
+  name: AI 招聘 - 面试题纲生成
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.7.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 50
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        knowledge_file_size_limit: 15
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: llm
+      id: e1
+      source: '1786800001001'
+      sourceHandle: source
+      target: '1786800001002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: e2
+      source: '1786800001002'
+      sourceHandle: source
+      target: '1786800001003'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: e3
+      source: '1786800001003'
+      sourceHandle: source
+      target: '1786800001004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: 与 build_dify_inputs(INTERVIEW_QUESTION_GENERATE) 变量名完全一致
+        selected: false
+        title: 开始
+        type: start
+        variables:
+        - default: ''
+          hint: 岗位名称（对应 job.name）
+          label: 岗位名称
+          options: []
+          placeholder: ''
+          required: true
+          type: text-input
+          variable: job_title
+        - default: ''
+          hint: 冻结岗位版本 JD 正文
+          label: 岗位JD
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: jd_text
+        - default: ''
+          hint: 已确认简历标准化文本
+          label: 简历文本
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: resume_text
+        - default: ''
+          hint: 评分维度 JSON 字符串，含 dimension_key/name/weight/description/anchors
+          label: 评分维度JSON
+          options: []
+          placeholder: ''
+          required: true
+          type: paragraph
+          variable: dimensions_json
+      height: 200
+      id: '1786800001001'
+      position:
+        x: 40
+        y: 240
+      positionAbsolute:
+        x: 40
+        y: 240
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 仅引用 Start 的 4 个输入变量；禁止输出敏感信息或招聘决策
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: deepseek-v4-flash
+          provider: langgenius/deepseek/deepseek
+        prompt_template:
+        - id: p1
+          role: system
+          text: "你是面试题纲生成助手。只根据给定岗位 JD、简历文本与评分维度，生成结构化面试问题。\n本工作流仅生成面试题纲，禁止招聘决策、禁止生成 Offer、禁止发送通知、禁止臆造敏感信息。\n\n# 硬性规则\n1.\
+            \ 必须围绕输入 dimensions_json 中的评分维度出题；每题 dimension_key 必须与输入维度的 dimension_key 完全一致，禁止自造维度。\n2. 优先使用 JD（jd_text）和简历（resume_text）中明确出现的事实；不得编造未出现的经历、项目、业绩、联系方式、证件号或其他敏感信息。\n\
+            3. evidence_source 只能是 JOB_REQUIREMENT、RESUME_EXPERIENCE、GENERAL 三者之一。\n4. 仅当 evidence_source=RESUME_EXPERIENCE\
+            \ 且简历中确有可引用事实时填写 resume_evidence；无可靠简历依据时不得伪造 resume_evidence，此时改用 JOB_REQUIREMENT 或 GENERAL，并将 resume_evidence\
+            \ 设为 null。\n5. evidence_source 为 JOB_REQUIREMENT 或 GENERAL 时，resume_evidence 必须为 null。\n6. display_order 从 1 开始连续递增，不得跳号或重复。\n\
+            7. follow_up_prompts 与 risk_flags 必须是字符串数组；没有内容时输出空数组。\n8. 输入中未出现的手机号、邮箱、证件号、住址等敏感信息一律不得输出或臆造。\n9. 只输出符合约定的 JSON\
+            \ 对象，不能输出 Markdown、解释文本或原始推理。\n10. 禁止输出 hire / reject / offer / notification 等决策或通知字段。\n\n输出 schema：\n{\n  \"\
+            questions\": [\n    {\n      \"dimension_key\": \"D001\",\n      \"question\": \"面试问题\",\n      \"purpose\": \"\
+            出题目的\",\n      \"evidence_source\": \"JOB_REQUIREMENT\",\n      \"resume_evidence\": null,\n      \"follow_up_prompts\"\
+            : [\"追问\"],\n      \"risk_flags\": [\"风险提示\"],\n      \"display_order\": 1\n    }\n  ]\n}"
+        - id: p2
+          role: user
+          text: '岗位名称：{{#1786800001001.job_title#}}
+
+
+            评分维度(JSON)：
+
+            {{#1786800001001.dimensions_json#}}
+
+
+            岗位JD：
+
+            {{#1786800001001.jd_text#}}
+
+
+            已确认简历：
+
+            {{#1786800001001.resume_text#}}
+
+
+            请按 system 中的 schema 输出 JSON。'
+        selected: false
+        structured_output:
+          schema:
+            $schema: http://json-schema.org/draft-07/schema#
+            additionalProperties: false
+            type: object
+            required:
+            - questions
+            properties:
+              questions:
+                type: array
+                minItems: 1
+                maxItems: 30
+                items:
+                  type: object
+                  additionalProperties: false
+                  required:
+                  - dimension_key
+                  - question
+                  - purpose
+                  - evidence_source
+                  - follow_up_prompts
+                  - risk_flags
+                  - display_order
+                  properties:
+                    dimension_key:
+                      type: string
+                    question:
+                      type: string
+                    purpose:
+                      type: string
+                    evidence_source:
+                      type: string
+                      enum:
+                      - JOB_REQUIREMENT
+                      - RESUME_EXPERIENCE
+                      - GENERAL
+                    resume_evidence:
+                      type:
+                      - string
+                      - 'null'
+                    follow_up_prompts:
+                      type: array
+                      items:
+                        type: string
+                    risk_flags:
+                      type: array
+                      items:
+                        type: string
+                    display_order:
+                      type: integer
+        structured_output_enabled: true
+        title: LLM·题纲生成
+        type: llm
+        vision:
+          enabled: false
+      height: 88
+      id: '1786800001002'
+      position:
+        x: 360
+        y: 240
+      positionAbsolute:
+        x: 360
+        y: 240
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        code: "import json\nimport re\n\n\nEVIDENCE_SOURCES = (\"JOB_REQUIREMENT\", \"RESUME_EXPERIENCE\", \"GENERAL\")\n\
+          QUESTION_ITEM_KEYS = (\n    \"dimension_key\",\n    \"question\",\n    \"purpose\",\n    \"evidence_source\",\n\
+          \    \"resume_evidence\",\n    \"follow_up_prompts\",\n    \"risk_flags\",\n    \"display_order\",\n)\nSPACE_RE\
+          \ = re.compile(r\"\\s+\")\n\n\ndef _fail(code, message, details=None):\n    payload = {\n        \"error\": True,\n\
+          \        \"error_code\": code,\n        \"error_message\": message,\n    }\n    if details:\n        payload[\"\
+          details\"] = details\n    return {\"result\": payload}\n\n\ndef _parse(raw):\n    if isinstance(raw, dict):\n  \
+          \      return raw\n    if raw is None:\n        return None\n    text = str(raw).strip()\n    if not text:\n   \
+          \     return None\n    fence = re.search(r\"```(?:json)?\\s*([\\s\\S]*?)```\", text, re.I)\n    if fence:\n    \
+          \    text = fence.group(1).strip()\n    try:\n        return json.loads(text)\n    except Exception:\n        start,\
+          \ end = text.find(\"{\"), text.rfind(\"}\")\n        if start >= 0 and end > start:\n            try:\n        \
+          \        return json.loads(text[start : end + 1])\n            except Exception:\n                return None\n\
+          \        return None\n\n\ndef _as_str(value):\n    if value is None:\n        return \"\"\n    return str(value).strip()\n\
+          \n\ndef _as_list(value):\n    if value is None:\n        return []\n    if isinstance(value, list):\n        return\
+          \ value\n    return None\n\n\ndef _dimension_keys(raw):\n    parsed = _parse(raw)\n    items = []\n    if isinstance(parsed,\
+          \ list):\n        items = parsed\n    elif isinstance(parsed, dict):\n        nested = parsed.get(\"dimensions\"\
+          )\n        if isinstance(nested, list):\n            items = nested\n        elif _as_str(parsed.get(\"dimension_key\"\
+          )):\n            items = [parsed]\n    keys = []\n    for item in items:\n        if not isinstance(item, dict):\n\
+          \            continue\n        key = _as_str(item.get(\"dimension_key\"))\n        if key:\n            keys.append(key)\n\
+          \    return keys\n\n\ndef _non_empty_str(value, field, max_len):\n    if not isinstance(value, str) or isinstance(value,\
+          \ bool):\n        raise ValueError(\"%s must be a string\" % field)\n    text = value.strip()\n    if not text:\n\
+          \        raise ValueError(\"%s must not be blank\" % field)\n    if len(text) > max_len:\n        raise ValueError(\"\
+          %s exceeds max length %s\" % (field, max_len))\n    return text\n\n\ndef _optional_str(value, field, max_len):\n\
+          \    if value is None:\n        return None\n    if not isinstance(value, str) or isinstance(value, bool):\n   \
+          \     raise ValueError(\"%s must be a string or null\" % field)\n    text = value.strip()\n    if not text:\n  \
+          \      return None\n    if len(text) > max_len:\n        raise ValueError(\"%s exceeds max length %s\" % (field,\
+          \ max_len))\n    return text\n\n\ndef _str_list(value, field, max_items, item_max):\n    items = _as_list(value)\n\
+          \    if items is None:\n        raise ValueError(\"%s must be an array\" % field)\n    if len(items) > max_items:\n\
+          \        raise ValueError(\"%s exceeds max items %s\" % (field, max_items))\n    out = []\n    for item in items:\n\
+          \        if not isinstance(item, str) or isinstance(item, bool):\n            raise ValueError(\"%s items must be\
+          \ strings\" % field)\n        text = item.strip()\n        if not text:\n            raise ValueError(\"%s items\
+          \ must not be blank\" % field)\n        if len(text) > item_max:\n            raise ValueError(\"%s item exceeds\
+          \ max length %s\" % (field, item_max))\n        out.append(text)\n    return out\n\n\ndef _display_order(value):\n\
+          \    if isinstance(value, bool) or not isinstance(value, int):\n        raise ValueError(\"display_order must be\
+          \ an integer\")\n    if value < 1 or value > 30:\n        raise ValueError(\"display_order must be 1-30\")\n   \
+          \ return value\n\n\ndef main(structured_out, llm_text, dimensions_json):\n    allowed = _dimension_keys(dimensions_json)\n\
+          \    if not allowed:\n        return _fail(\n            \"output_validation_failed\",\n            \"dimensions_json_invalid\"\
+          ,\n            [\"dimensions_json must contain dimension_key values\"],\n        )\n\n    payload = None\n    if\
+          \ isinstance(structured_out, dict) and structured_out:\n        payload = structured_out\n    if payload is None:\n\
+          \        payload = _parse(llm_text)\n    if not isinstance(payload, dict):\n        return _fail(\n            \"\
+          output_validation_failed\",\n            \"json_parse_failed\",\n            [\"LLM output is not a JSON object\"\
+          ],\n        )\n\n    extra_top = [key for key in payload.keys() if key != \"questions\"]\n    if extra_top:\n  \
+          \      return _fail(\n            \"output_validation_failed\",\n            \"schema_invalid\",\n            [\"\
+          unexpected top-level fields: %s\" % \", \".join(sorted(extra_top))],\n        )\n\n    questions = payload.get(\"\
+          questions\")\n    if not isinstance(questions, list):\n        return _fail(\n            \"output_validation_failed\"\
+          ,\n            \"schema_invalid\",\n            [\"questions must be an array\"],\n        )\n    if len(questions)\
+          \ < 1 or len(questions) > 30:\n        return _fail(\n            \"output_validation_failed\",\n            \"\
+          schema_invalid\",\n            [\"questions must contain 1-30 items\"],\n        )\n\n    normalized = []\n    details\
+          \ = []\n    seen_questions = set()\n    try:\n        for index, raw in enumerate(questions):\n            loc =\
+          \ \"questions[%s]\" % index\n            if not isinstance(raw, dict):\n                raise ValueError(\"%s must\
+          \ be an object\" % loc)\n            extra = [key for key in raw.keys() if key not in QUESTION_ITEM_KEYS]\n    \
+          \        if extra:\n                raise ValueError(\"%s unexpected fields: %s\" % (loc, \", \".join(sorted(extra))))\n\
+          \            key = _non_empty_str(raw.get(\"dimension_key\"), loc + \".dimension_key\", 100)\n            if key\
+          \ not in allowed:\n                raise ValueError(\"%s unknown dimension_key\" % loc)\n            question =\
+          \ _non_empty_str(raw.get(\"question\"), loc + \".question\", 2000)\n            purpose = _non_empty_str(raw.get(\"\
+          purpose\"), loc + \".purpose\", 2000)\n            source = raw.get(\"evidence_source\")\n            if source\
+          \ not in EVIDENCE_SOURCES:\n                raise ValueError(\"%s evidence_source must be JOB_REQUIREMENT|RESUME_EXPERIENCE|GENERAL\"\
+          \ % loc)\n            resume_evidence = _optional_str(raw.get(\"resume_evidence\"), loc + \".resume_evidence\",\
+          \ 2000)\n            if source == \"RESUME_EXPERIENCE\":\n                if not resume_evidence:\n            \
+          \        raise ValueError(\"%s RESUME_EXPERIENCE requires resume_evidence\" % loc)\n            elif resume_evidence:\n\
+          \                raise ValueError(\"%s resume_evidence must be empty for this source\" % loc)\n            follow_ups\
+          \ = _str_list(raw.get(\"follow_up_prompts\", []), loc + \".follow_up_prompts\", 10, 1000)\n            risk_flags\
+          \ = _str_list(raw.get(\"risk_flags\", []), loc + \".risk_flags\", 10, 500)\n            order = _display_order(raw.get(\"\
+          display_order\"))\n            fingerprint = SPACE_RE.sub(\"\", question).casefold()\n            if fingerprint\
+          \ in seen_questions:\n                raise ValueError(\"duplicate question text is not allowed\")\n           \
+          \ seen_questions.add(fingerprint)\n            normalized.append(\n                {\n                    \"dimension_key\"\
+          : key,\n                    \"question\": question,\n                    \"purpose\": purpose,\n               \
+          \     \"evidence_source\": source,\n                    \"resume_evidence\": resume_evidence,\n                \
+          \    \"follow_up_prompts\": follow_ups,\n                    \"risk_flags\": risk_flags,\n                    \"\
+          display_order\": order,\n                }\n            )\n        orders = [item[\"display_order\"] for item in\
+          \ normalized]\n        expected = list(range(1, len(normalized) + 1))\n        if orders != expected:\n        \
+          \    raise ValueError(\"display_order must run consecutively from 1 to N\")\n    except ValueError as exc:\n   \
+          \     details.append(str(exc))\n        return _fail(\"output_validation_failed\", \"schema_invalid\", details)\n\
+          \n    return {\"result\": {\"questions\": normalized}}\n"
+        code_language: python3
+        desc: 解析并校验 JSON；失败时返回结构化错误，不伪造 questions
+        outputs:
+          result:
+            children: null
+            type: object
+        selected: false
+        title: 代码·契约校验
+        type: code
+        variables:
+        - value_selector:
+          - '1786800001002'
+          - structured_output
+          value_type: object
+          variable: structured_out
+        - value_selector:
+          - '1786800001002'
+          - text
+          value_type: string
+          variable: llm_text
+        - value_selector:
+          - '1786800001001'
+          - dimensions_json
+          value_type: string
+          variable: dimensions_json
+      height: 52
+      id: '1786800001003'
+      position:
+        x: 680
+        y: 240
+      positionAbsolute:
+        x: 680
+        y: 240
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    - data:
+        desc: 成功时 result 为 InterviewQuestionGenerateResult；失败时无 questions
+        outputs:
+        - value_selector:
+          - '1786800001003'
+          - result
+          value_type: object
+          variable: result
+        selected: false
+        title: 结束
+        type: end
+      height: 90
+      id: '1786800001004'
+      position:
+        x: 1000
+        y: 240
+      positionAbsolute:
+        x: 1000
+        y: 240
+      selected: false
+      type: custom
+      width: 242
+      zIndex: 0
+    viewport:
+      x: 60
+      y: 60
+      zoom: 0.7
+  rag_pipeline_variables: []

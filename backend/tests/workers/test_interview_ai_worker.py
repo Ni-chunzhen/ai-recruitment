@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.core.config import get_settings
 from app.models.ai_task import (
     AI_TASK_STATUS_OUTPUT_INVALID,
     AI_TASK_STATUS_PENDING,
@@ -22,6 +23,7 @@ from app.models.ai_task import (
     ERROR_CATEGORY_RETRYABLE,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    TASK_TYPE_RESUME_PARSE,
     AITaskAttempt,
 )
 from app.schemas.interview_ai import InterviewDimensionSnapshot
@@ -1003,3 +1005,201 @@ async def test_dify_unconfigured_interview_falls_back_to_mock(monkeypatch) -> No
     assert posted["n"] == 0
     assert out.result is not None
     assert out.result["questions"]
+
+
+LIVE_JOB_TITLE = "FICTIONAL-LIVE-20260818 示例岗位-虚构仓储接口工程师"
+LIVE_JD_TEXT = "FICTIONAL-LIVE-20260818 本岗位为完全虚构的演示说明。"
+LIVE_RESUME_TEXT = "FICTIONAL-LIVE-20260818 候选人档案为完全虚构样本。"
+LIVE_QUESTION_TEXT = "FICTIONAL-LIVE-20260818 请描述一次接口联调失败的处理过程。"
+LIVE_KEY = "test-interview-question-key"
+LIVE_WORKFLOW_ID = "test-interview-question-workflow-id"
+
+
+def _live_question_loader(task) -> QuestionProviderInput:
+    snap = task.input_snapshot
+    return QuestionProviderInput(
+        task_id=task.id,
+        round_id=UUID(str(snap["round_id"])),
+        job_version_id=UUID(str(snap["job_version_id"])),
+        resume_version_id=UUID(str(snap["resume_version_id"])),
+        job_title=LIVE_JOB_TITLE,
+        jd_text=LIVE_JD_TEXT,
+        resume_text=LIVE_RESUME_TEXT,
+        dimensions=list(snap["dimensions"]),
+        workflow_key=str(snap["workflow_key"]),
+        workflow_version=str(snap["workflow_version"]),
+        input_snapshot_hash=str(snap["input_snapshot_hash"]),
+    )
+
+
+def _assert_audit_carriers_have_no_live_plaintext(task, attempt) -> None:
+    request_plain = _decrypt_json(attempt.sensitive_request_encrypted)
+    response_plain = _decrypt_json(attempt.sensitive_response_encrypted)
+    carriers = [
+        task.raw_request,
+        task.raw_response,
+        task.result_payload,
+        attempt.raw_response,
+        request_plain,
+        response_plain,
+    ]
+    blob = json.dumps(carriers, ensure_ascii=False, default=str)
+    for marker in (
+        LIVE_JD_TEXT,
+        LIVE_RESUME_TEXT,
+        LIVE_QUESTION_TEXT,
+        LIVE_JOB_TITLE,
+        LIVE_KEY,
+        LIVE_KEY[-6:],
+    ):
+        assert marker not in blob
+    for payload in carriers:
+        if not isinstance(payload, dict):
+            continue
+        assert "api_key_suffix" not in payload
+        inputs = payload.get("inputs")
+        if isinstance(inputs, dict):
+            joined = json.dumps(inputs, ensure_ascii=False)
+            assert LIVE_JD_TEXT not in joined
+            assert LIVE_RESUME_TEXT not in joined
+
+
+@pytest.mark.asyncio
+async def test_question_live_worker_audit_carriers_have_no_plaintext(
+    monkeypatch,
+) -> None:
+    from app.services.ai_providers import dify
+    from app.workers import ai_tasks as worker
+
+    monkeypatch.setenv("AI_PROVIDER", "dify")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("DIFY_INTERVIEW_QUESTION_LIVE_ENABLED", "true")
+    monkeypatch.setenv("DIFY_INTERVIEW_QUESTION_GENERATE_API_KEY", LIVE_KEY)
+    monkeypatch.setenv(
+        "DIFY_INTERVIEW_QUESTION_GENERATE_WORKFLOW_ID", LIVE_WORKFLOW_ID
+    )
+    monkeypatch.setenv("DIFY_API_BASE_URL", "https://dify.example.test")
+    get_settings.cache_clear()
+
+    round_id = uuid4()
+    snapshot = _frozen_question_snapshot(round_id=round_id)
+    task = _make_task(
+        task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        snapshot=snapshot,
+        round_id=round_id,
+    )
+    session = FakeWorkerSession(task)
+    live_result = {
+        "questions": [
+            {
+                "dimension_key": "D001",
+                "question": LIVE_QUESTION_TEXT,
+                "purpose": "考察接口实现",
+                "evidence_source": "JOB_REQUIREMENT",
+                "resume_evidence": None,
+                "follow_up_prompts": ["请补充可量化结果。"],
+                "risk_flags": ["可能缺少细节"],
+                "display_order": 1,
+            }
+        ]
+    }
+
+    async def fake_post(*, task_type, input_snapshot):
+        return ProviderOutcome(
+            ok=True,
+            result=live_result,
+            raw_request={
+                "provider": "dify",
+                "url": "https://dify.example.test/v1/workflows/run",
+                "workflow_id": LIVE_WORKFLOW_ID,
+                "task_type": task_type,
+                "inputs": {
+                    "job_title": LIVE_JOB_TITLE,
+                    "jd_text": LIVE_JD_TEXT,
+                    "resume_text": LIVE_RESUME_TEXT,
+                    "dimensions_json": "[]",
+                },
+                "api_key_suffix": LIVE_KEY[-6:],
+            },
+            raw_response={"data": {"outputs": {"result": live_result}}},
+            http_status=200,
+            provider_run_id="wf-run-live-test",
+        )
+
+    captured = await _bind_stage8_mocks(
+        monkeypatch, task=task, outcome=ProviderOutcome(ok=True, result=live_result)
+    )
+
+    async def fake_load_live(session, *, task_id):
+        return _live_question_loader(task)
+
+    async def real_provider(*, task_type, input_snapshot):
+        captured["provider_inputs"].append(dict(input_snapshot))
+        return await worker.run_dify(
+            task_type=task_type, input_snapshot=input_snapshot
+        )
+
+    monkeypatch.setattr(dify, "_post_workflow", fake_post)
+    monkeypatch.setattr(
+        "app.services.interview_questions.load_question_provider_input",
+        fake_load_live,
+    )
+    monkeypatch.setattr(worker, "_run_provider", real_provider)
+
+    try:
+        result = await worker._handle_process(session, task.id)
+        assert result["status"] == AI_TASK_STATUS_SUCCEEDED
+        attempt = session.attempts[0]
+        _assert_audit_carriers_have_no_live_plaintext(task, attempt)
+        public = task.raw_request or {}
+        assert public.get("http_status") == 200
+        assert public.get("question_count") == 1
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_question_output_invalid_does_not_touch_resume_tasks(monkeypatch) -> None:
+    from app.workers import ai_tasks as worker
+
+    round_id = uuid4()
+    snapshot = _frozen_question_snapshot(round_id=round_id)
+    task = _make_task(
+        task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        snapshot=snapshot,
+        round_id=round_id,
+    )
+    resume_task = _make_task(
+        task_type=TASK_TYPE_RESUME_PARSE,
+        snapshot={"task_type": TASK_TYPE_RESUME_PARSE},
+        round_id=uuid4(),
+    )
+    resume_task.status = AI_TASK_STATUS_SUCCEEDED
+    resume_task.error_code = None
+    resume_finished = resume_task.finished_at
+
+    async def persist_invalid(session, **kwargs):
+        raise AIOutputValidationError(
+            "AI output failed snapshot validation",
+            code="output_validation_failed",
+        )
+
+    outcome = ProviderOutcome(
+        ok=True,
+        result=_question_result(),
+        raw_request={"provider": "mock"},
+        raw_response={"outputs": _question_result()},
+        http_status=200,
+    )
+    session = FakeWorkerSession(task)
+    await _bind_stage8_mocks(
+        monkeypatch, task=task, outcome=outcome, persist=persist_invalid
+    )
+
+    result = await worker._handle_process(session, task.id)
+
+    assert result["status"] == AI_TASK_STATUS_OUTPUT_INVALID
+    assert resume_task.status == AI_TASK_STATUS_SUCCEEDED
+    assert resume_task.error_code is None
+    assert resume_task.finished_at == resume_finished
+    assert resume_task not in session.added

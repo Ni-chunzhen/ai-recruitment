@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     )
     DIFY_RESUME_PARSE_WORKFLOW_ID: str = ""
     DIFY_RESUME_SCORE_WORKFLOW_ID: str = ""
+    dify_interview_question_generate_api_key_secret: SecretStr = Field(
+        validation_alias="DIFY_INTERVIEW_QUESTION_GENERATE_API_KEY",
+        default=SecretStr(""),
+    )
+    dify_interview_question_generate_workflow_id: str = Field(
+        validation_alias="DIFY_INTERVIEW_QUESTION_GENERATE_WORKFLOW_ID",
+        default="",
+    )
+    dify_interview_question_live_enabled: bool = Field(
+        validation_alias="DIFY_INTERVIEW_QUESTION_LIVE_ENABLED",
+        default=False,
+    )
     AI_TASK_TIMEOUT_SECONDS: int = 60
     AI_RAW_PAYLOAD_RETENTION_DAYS: int = 90
 
@@ -111,6 +123,7 @@ class Settings(BaseSettings):
     def dify_api_key_for(self, task_type: str) -> str:
         """Dify 按应用鉴权：不同工作流需使用对应应用的 API Key。"""
         from app.models.ai_task import (
+            TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
             TASK_TYPE_JD_PARSE,
             TASK_TYPE_RESUME_PARSE,
             TASK_TYPE_RESUME_SCORE,
@@ -127,6 +140,10 @@ class Settings(BaseSettings):
             specific = self.dify_resume_parse_api_key_secret.get_secret_value().strip()
         elif task_type == TASK_TYPE_RESUME_SCORE:
             specific = self.dify_resume_score_api_key_secret.get_secret_value().strip()
+        elif task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+            return (
+                self.dify_interview_question_generate_api_key_secret.get_secret_value().strip()
+            )
         else:
             specific = ""
         return specific or self.dify_api_key

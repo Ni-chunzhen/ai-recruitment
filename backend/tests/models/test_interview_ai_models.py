@@ -204,6 +204,7 @@ SENSITIVE_AUDIT_FIELD_NAMES = (
     "segment_text",
     "resume_text",
     "jd_content",
+    "jd_text",
     "question_encrypted",
     "purpose_encrypted",
     "resume_evidence_encrypted",
@@ -472,6 +473,7 @@ def test_sensitive_audit_keys_and_markers() -> None:
     lowered_keys = {key.lower() for key in SENSITIVE_AUDIT_KEYS}
     for name in SENSITIVE_AUDIT_FIELD_NAMES:
         assert name.lower() in lowered_keys
+    assert "jd_text" in SENSITIVE_AUDIT_KEYS
     markers = tuple(marker.lower() for marker in SENSITIVE_VALUE_MARKERS)
     for marker in SENSITIVE_VALUE_MARKERS_REQUIRED:
         assert marker.lower() in markers
@@ -484,6 +486,13 @@ def test_sanitize_audit_changes_rejects_top_level_sensitive_key() -> None:
 
     with pytest.raises(ValueError, match="sensitive key"):
         sanitize_audit_changes({"question": "面试官如何看冲突处理"})
+
+
+def test_sanitize_audit_changes_rejects_jd_text() -> None:
+    from app.models import sanitize_audit_changes
+
+    with pytest.raises(ValueError, match="sensitive key"):
+        sanitize_audit_changes({"jd_text": "JD正文"})
 
 
 def test_sanitize_audit_changes_rejects_nested_dict_sensitive_key() -> None:

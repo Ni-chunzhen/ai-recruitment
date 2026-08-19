@@ -171,6 +171,69 @@ def _encrypt_json_blob(payload: object | None) -> str | None:
     return encrypt_secret(json.dumps(payload, ensure_ascii=False, default=str))
 
 
+def _is_question_live_http(
+    task: AITask, outcome: ProviderOutcome | None
+) -> bool:
+    if task.task_type != TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        return False
+    raw = outcome.raw_request if outcome is not None else None
+    return isinstance(raw, dict) and raw.get("provider") == "dify"
+
+
+def _question_live_audit_provider_input(
+    provider_input: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(provider_input, dict):
+        return provider_input
+    body_keys = {"job_title", "jd_text", "resume_text", "dimensions"}
+    redacted: dict[str, Any] = {
+        "input_field_names": sorted(provider_input.keys()),
+    }
+    for key, value in provider_input.items():
+        if key in body_keys:
+            redacted[f"{key}_sha256"] = _content_sha256(value)
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def _question_live_audit_outcome(
+    outcome: ProviderOutcome,
+) -> ProviderOutcome:
+    result = outcome.result
+    redacted_result: dict[str, Any] | None = None
+    if isinstance(result, dict):
+        questions = result.get("questions")
+        count = len(questions) if isinstance(questions, list) else 0
+        redacted_result = {"question_count": count}
+    raw_response = outcome.raw_response
+    if isinstance(raw_response, dict) and (
+        "outputs" in raw_response or "data" in raw_response
+    ):
+        run_id, req_id = extract_dify_run_ids(raw_response)
+        raw_response = {
+            key: value
+            for key, value in {
+                "provider_run_id": run_id or outcome.provider_run_id,
+                "request_id": req_id or outcome.request_id,
+            }.items()
+            if value is not None
+        }
+    return ProviderOutcome(
+        ok=outcome.ok,
+        result=redacted_result,
+        raw_request=outcome.raw_request,
+        raw_response=raw_response,
+        error_code=outcome.error_code,
+        error_message=outcome.error_message,
+        error_category=outcome.error_category,
+        http_status=outcome.http_status,
+        provider_run_id=outcome.provider_run_id,
+        request_id=outcome.request_id,
+        extra=outcome.extra,
+    )
+
+
 def _write_stage8_raw(
     *,
     task: AITask,
@@ -179,6 +242,10 @@ def _write_stage8_raw(
     outcome: ProviderOutcome | None,
     extra: dict[str, Any] | None = None,
 ) -> None:
+    if _is_question_live_http(task, outcome):
+        provider_input = _question_live_audit_provider_input(provider_input)
+        if outcome is not None:
+            outcome = _question_live_audit_outcome(outcome)
     if provider_input is not None:
         attempt.sensitive_request_encrypted = _encrypt_json_blob(
             {

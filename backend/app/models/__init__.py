@@ -228,6 +228,7 @@ SENSITIVE_AUDIT_KEYS = frozenset(
         "extracted_text",
         "resume_text",
         "jd_content",
+        "jd_text",
         "meeting_password",
         "meeting_password_encrypted",
         "contact_phone",

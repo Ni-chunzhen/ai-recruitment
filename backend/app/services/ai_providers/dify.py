@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from pydantic import ValidationError
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.models.ai_task import (
     ERROR_CATEGORY_NON_RETRYABLE,
     ERROR_CATEGORY_RETRYABLE,
@@ -23,6 +25,134 @@ from app.services.ai_providers.base import (
     validate_ai_result,
 )
 
+INTERVIEW_QUESTION_LIVE_UAT_PREFIX = "UAT-CC-20260818"
+INTERVIEW_QUESTION_LIVE_FICTIONAL_PREFIX = "FICTIONAL-LIVE-20260818"
+_QUESTION_LIVE_INPUT_KEYS = frozenset(
+    {"job_title", "jd_text", "resume_text", "dimensions_json"}
+)
+_QUESTION_LIVE_FORBIDDEN_KEYS = frozenset(
+    {
+        "password",
+        "token",
+        "api_key",
+        "Authorization",
+        "cookie",
+        "meeting_password",
+        "segments",
+        "segments_json",
+        "quote",
+        "candidate_id",
+        "raw_request",
+        "raw_response",
+        "result_payload",
+    }
+)
+
+
+@dataclass(frozen=True)
+class LiveGateDecision:
+    allow_http: bool
+    fallback_mock: bool
+    error_code: str | None
+    reason: str | None
+
+
+def _question_live_contains_forbidden(value: Any) -> bool:
+    if isinstance(value, dict):
+        if _QUESTION_LIVE_FORBIDDEN_KEYS.intersection(value):
+            return True
+        if any(str(key).startswith("sensitive_") for key in value):
+            return True
+        return any(_question_live_contains_forbidden(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_question_live_contains_forbidden(item) for item in value)
+    return False
+
+
+def _question_live_shared_prefix(
+    job_title: str, jd_text: str, resume_text: str
+) -> str | None:
+    for prefix in (
+        INTERVIEW_QUESTION_LIVE_UAT_PREFIX,
+        INTERVIEW_QUESTION_LIVE_FICTIONAL_PREFIX,
+    ):
+        if (
+            job_title.startswith(prefix)
+            and jd_text.startswith(prefix)
+            and resume_text.startswith(prefix)
+        ):
+            return prefix
+    return None
+
+
+def interview_question_live_http_allowed(
+    settings: Settings, inputs: dict[str, Any]
+) -> LiveGateDecision:
+    """Decide whether INTERVIEW_QUESTION_GENERATE may call Dify HTTP."""
+    if str(settings.ENVIRONMENT or "").strip().lower() != "development":
+        return LiveGateDecision(
+            allow_http=False,
+            fallback_mock=True,
+            error_code=None,
+            reason="environment",
+        )
+    if settings.dify_interview_question_live_enabled is not True:
+        return LiveGateDecision(
+            allow_http=False,
+            fallback_mock=True,
+            error_code=None,
+            reason="switch_off",
+        )
+
+    key = (
+        settings.dify_interview_question_generate_api_key_secret.get_secret_value()
+    ).strip()
+    workflow_id = settings.dify_interview_question_generate_workflow_id.strip()
+    base_url = settings.DIFY_API_BASE_URL.strip()
+    if not key or not workflow_id or not base_url:
+        return LiveGateDecision(
+            allow_http=False,
+            fallback_mock=False,
+            error_code="interview_question_live_not_configured",
+            reason="not_configured",
+        )
+
+    if not isinstance(inputs, dict) or set(inputs) != _QUESTION_LIVE_INPUT_KEYS:
+        return LiveGateDecision(
+            allow_http=False,
+            fallback_mock=False,
+            error_code="interview_question_live_unauthorized",
+            reason="input_keys",
+        )
+
+    dims_raw = inputs.get("dimensions_json")
+    dims_parsed = _parse_jsonish(dims_raw) if isinstance(dims_raw, str) else dims_raw
+    if _question_live_contains_forbidden(dims_parsed):
+        return LiveGateDecision(
+            allow_http=False,
+            fallback_mock=False,
+            error_code="interview_question_live_unauthorized",
+            reason="forbidden_keys",
+        )
+
+    job_title = str(inputs.get("job_title") or "")
+    jd_text = str(inputs.get("jd_text") or "")
+    resume_text = str(inputs.get("resume_text") or "")
+    if _question_live_shared_prefix(job_title, jd_text, resume_text) is None:
+        return LiveGateDecision(
+            allow_http=False,
+            fallback_mock=False,
+            error_code="interview_question_live_unauthorized",
+            reason="unauthorized_prefix",
+        )
+
+    return LiveGateDecision(
+        allow_http=True,
+        fallback_mock=False,
+        error_code=None,
+        reason=None,
+    )
+
 
 def _workflow_id_for(task_type: str) -> str:
     settings = get_settings()
@@ -34,6 +164,8 @@ def _workflow_id_for(task_type: str) -> str:
         return settings.DIFY_RESUME_PARSE_WORKFLOW_ID
     if task_type == TASK_TYPE_RESUME_SCORE:
         return settings.DIFY_RESUME_SCORE_WORKFLOW_ID
+    if task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        return settings.dify_interview_question_generate_workflow_id.strip()
     return ""
 
 
@@ -357,6 +489,37 @@ def normalize_dify_outputs(
                 blob.get("information_insufficient") or False
             ),
         }
+
+    if task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        blob: Any = outputs
+        nested = _parse_jsonish(outputs.get("result")) if isinstance(outputs, dict) else None
+        if isinstance(nested, dict) and (
+            "questions" in nested or nested.get("error")
+        ):
+            blob = nested
+        if not isinstance(blob, dict):
+            raise ValueError("interview question result must be an object")
+        questions = blob.get("questions")
+        has_questions = isinstance(questions, list) and bool(questions)
+        if blob.get("error") and not has_questions:
+            raise ValueError(
+                str(
+                    blob.get("error_message")
+                    or blob.get("error_code")
+                    or "interview question workflow error"
+                )
+            )
+        if not isinstance(questions, list):
+            raise ValueError("interview question result missing questions")
+        orders = []
+        for item in questions:
+            if not isinstance(item, dict):
+                raise ValueError("interview question item must be an object")
+            orders.append(item.get("display_order"))
+        expected = list(range(1, len(questions) + 1))
+        if orders != expected:
+            raise ValueError("display_order must run consecutively from 1 to N")
+        return {"questions": questions}
 
     return outputs
 
@@ -782,19 +945,89 @@ async def _run_dify_jd_parse_chain(
     )
 
 
+def _sha256_json(value: Any) -> str:
+    blob = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _redact_question_live_raw_request(
+    raw_request: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(raw_request, dict):
+        return raw_request
+    inputs = raw_request.get("inputs")
+    redacted = {
+        key: value
+        for key, value in raw_request.items()
+        if key not in {"inputs", "api_key_suffix", "url"}
+    }
+    if isinstance(inputs, dict):
+        redacted["input_field_names"] = sorted(inputs.keys())
+        for key, value in inputs.items():
+            redacted[f"{key}_sha256"] = _sha256_json(value)
+    return redacted
+
+
+def _redact_question_live_raw_response(
+    raw_response: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(raw_response, dict):
+        return raw_response
+    run_id, req_id = extract_dify_run_ids(raw_response)
+    payload: dict[str, Any] = {}
+    data = raw_response.get("data") if isinstance(raw_response.get("data"), dict) else {}
+    if run_id:
+        payload["provider_run_id"] = run_id
+    elif isinstance(data, dict) and data.get("id"):
+        payload["provider_run_id"] = data.get("id")
+    if req_id:
+        payload["request_id"] = req_id
+    if isinstance(data, dict) and data.get("status"):
+        payload["status"] = data.get("status")
+    return payload
+
+
+def _redact_question_live_outcome(outcome: ProviderOutcome) -> ProviderOutcome:
+    return ProviderOutcome(
+        ok=outcome.ok,
+        result=outcome.result,
+        raw_request=_redact_question_live_raw_request(outcome.raw_request),
+        raw_response=_redact_question_live_raw_response(outcome.raw_response),
+        error_code=outcome.error_code,
+        error_message=outcome.error_message,
+        error_category=outcome.error_category,
+        http_status=outcome.http_status,
+        provider_run_id=outcome.provider_run_id,
+        request_id=outcome.request_id,
+        extra=outcome.extra,
+    )
+
+
 async def run_dify(
     *,
     task_type: str,
     input_snapshot: dict[str, Any],
 ) -> ProviderOutcome:
-    if task_type in {
-        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
-        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
-    }:
-        # Stage 8 checkpoint: no live Dify. Keep input mapping above for later.
+    if task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
         from app.services.ai_providers.mock import run_mock
 
         return await run_mock(task_type=task_type, input_snapshot=input_snapshot)
+
+    if task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        settings = get_settings()
+        inputs = build_dify_inputs(task_type, input_snapshot)
+        decision = interview_question_live_http_allowed(settings, inputs)
+        if decision.fallback_mock:
+            from app.services.ai_providers.mock import run_mock
+
+            return await run_mock(task_type=task_type, input_snapshot=input_snapshot)
+        if not decision.allow_http:
+            return ProviderOutcome(
+                ok=False,
+                error_code=decision.error_code,
+                error_message=decision.reason or decision.error_code,
+                error_category=ERROR_CATEGORY_NON_RETRYABLE,
+            )
 
     if task_type in {TASK_TYPE_RESUME_PARSE, TASK_TYPE_RESUME_SCORE}:
         if not _resume_dify_configured(task_type):
@@ -820,6 +1053,8 @@ async def run_dify(
         return await _run_dify_jd_parse_chain(input_snapshot)
 
     step = await _post_workflow(task_type=task_type, input_snapshot=input_snapshot)
+    if task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+        step = _redact_question_live_outcome(step)
     if not step.ok or not isinstance(step.result, dict):
         return step
 
