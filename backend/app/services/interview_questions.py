@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models import User
 from app.models.ai_task import (
@@ -907,7 +908,7 @@ async def persist_question_generation_result(
     await create_question_version(session, version)
     items = _build_encrypted_items(version_id=version.id, result=result)
     await create_question_items(session, items)
-    version.items = items
+    set_committed_value(version, "items", items)
     question_set.current_version_id = version.id
     question_set.status = QUESTION_SET_STATUS_DRAFT
     question_set.confirmed_by = None
@@ -1057,7 +1058,7 @@ async def create_manual_question_version(
     await create_question_version(session, version)
     items = _build_encrypted_items(version_id=version.id, result=result)
     await create_question_items(session, items)
-    version.items = items
+    set_committed_value(version, "items", items)
     question_set.current_version_id = version.id
     question_set.status = QUESTION_SET_STATUS_DRAFT
     question_set.confirmed_by = None

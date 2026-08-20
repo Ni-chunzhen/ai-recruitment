@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 TaskType = Literal[
     "JD_PARSE",
@@ -112,6 +112,20 @@ class JdParseResult(BaseModel):
 
 class CancelAITaskRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+
+
+class MarkStaleFailedAITaskIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_updated_at: datetime
+
+
+class MarkStaleFailedAITaskOut(BaseModel):
+    id: UUID
+    status: str
+    error_code: str | None
+    updated_at: datetime
+    finished_at: datetime | None
 
 
 class CreateAITaskRequest(BaseModel):

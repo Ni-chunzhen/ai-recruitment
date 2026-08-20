@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from app.models.ai_task import (
     AI_TASK_STATUS_FAILED,
     AI_TASK_STATUS_OUTPUT_INVALID,
     AI_TASK_STATUS_PENDING,
+    AI_TASK_STATUS_RUNNING,
     AI_TASK_STATUS_SUCCEEDED,
     BUSINESS_TYPE_JOB,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
@@ -22,6 +23,7 @@ from app.models.ai_task import (
     TASK_TYPE_SCORE_DIMENSION_RECOMMEND,
     TASK_TYPES,
     AITask,
+    AITaskAttempt,
 )
 from app.models.job import JOB_STATUS_CLOSED, JOB_STATUS_DRAFT
 from app.repositories.ai_tasks import (
@@ -49,6 +51,7 @@ from app.schemas.ai_task import (
     AITaskListResponse,
     AITaskSummaryOut,
     CreateAITaskRequest,
+    MarkStaleFailedAITaskOut,
 )
 from app.schemas.job import JobDetail, structured_jd_to_dict
 from app.services.audit import RequestContext, record_audit
@@ -64,6 +67,10 @@ class AITaskValidationError(Exception):
 
 class AITaskStateError(Exception):
     pass
+
+
+STALE_RUNNING_MIN_AGE = timedelta(minutes=5)
+STALE_RUNNING_RECOVERED_MESSAGE = "stale running recovered"
 
 
 def enqueue_ai_task(task_id: UUID, *, countdown: int = 0) -> None:
@@ -401,6 +408,98 @@ async def cancel_ai_task(
     refreshed = await get_ai_task_by_id(session, task.id)
     assert refreshed is not None
     return to_ai_task_out(refreshed)
+
+
+def _normalize_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+async def mark_stale_failed_ai_task(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    expected_updated_at: datetime,
+    actor: User,
+    request_context: RequestContext,
+) -> MarkStaleFailedAITaskOut:
+    now = datetime.now(UTC)
+    expected = _normalize_utc(expected_updated_at)
+
+    task = await get_ai_task_by_id(session, task_id)
+    if task is None:
+        raise AITaskNotFoundError("ai task not found")
+    if task.status != AI_TASK_STATUS_RUNNING:
+        raise AITaskStateError("only running tasks can be marked stale-failed")
+    task_updated = _normalize_utc(task.updated_at)
+    if task_updated != expected:
+        raise AITaskStateError("expected_updated_at mismatch")
+    if task_updated > now - STALE_RUNNING_MIN_AGE:
+        raise AITaskStateError("running task is not stale enough")
+
+    previous_status = task.status
+    claimed = await session.execute(
+        update(AITask)
+        .where(
+            AITask.id == task_id,
+            AITask.status == AI_TASK_STATUS_RUNNING,
+            AITask.updated_at == expected,
+            AITask.updated_at <= now - STALE_RUNNING_MIN_AGE,
+        )
+        .values(
+            status=AI_TASK_STATUS_FAILED,
+            error_code="stale_running_recovered",
+            error_category="non_retryable",
+            error_message=STALE_RUNNING_RECOVERED_MESSAGE,
+            finished_at=now,
+            updated_at=now,
+        )
+    )
+    if claimed.rowcount != 1:
+        raise AITaskStateError("stale running recovery conflict")
+
+    await session.execute(
+        update(AITaskAttempt)
+        .where(
+            AITaskAttempt.task_id == task_id,
+            AITaskAttempt.status == AI_TASK_STATUS_RUNNING,
+        )
+        .values(
+            status=AI_TASK_STATUS_FAILED,
+            error_category="non_retryable",
+            error_message=STALE_RUNNING_RECOVERED_MESSAGE,
+            finished_at=now,
+        )
+    )
+
+    await record_audit(
+        session,
+        action="ai_task.stale_running_recovered",
+        result="success",
+        resource_type="ai_task",
+        request_context=request_context,
+        actor_user_id=actor.id,
+        resource_id=str(task.id),
+        changes={
+            "ai_task_id": str(task.id),
+            "task_type": task.task_type,
+            "previous_status": previous_status,
+            "new_status": AI_TASK_STATUS_FAILED,
+            "expected_updated_at": expected.isoformat(),
+            "error_code": "stale_running_recovered",
+        },
+    )
+    await session.commit()
+    refreshed = await get_ai_task_by_id(session, task.id)
+    assert refreshed is not None
+    return MarkStaleFailedAITaskOut(
+        id=refreshed.id,
+        status=refreshed.status,
+        error_code=refreshed.error_code,
+        updated_at=refreshed.updated_at,
+        finished_at=refreshed.finished_at,
+    )
 
 
 async def apply_ai_task_result(

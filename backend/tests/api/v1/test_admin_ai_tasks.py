@@ -540,3 +540,106 @@ def test_to_admin_detail_strips_snapshots_and_raw_bodies() -> None:
     assert "RAW_ATTEMPT" not in dumped_text
     assert "sk-secret" not in dumped_text
     assert dumped["attempts"][0]["provider_run_id"] == "run-abc"
+
+
+def _mark_stale_out_payload(**overrides) -> dict:
+    now = datetime.now(UTC).isoformat()
+    payload = {
+        "id": str(uuid4()),
+        "status": "failed",
+        "error_code": "stale_running_recovered",
+        "updated_at": now,
+        "finished_at": now,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_admin_mark_stale_failed_path_and_permission(lifespan_patches) -> None:
+    from app.schemas.ai_task import MarkStaleFailedAITaskOut
+
+    out = MarkStaleFailedAITaskOut.model_validate(_mark_stale_out_payload())
+    ts = datetime.now(UTC).isoformat()
+    with (
+        _client_for(_user(*RECRUITER_PERMS)) as client,
+        patch(
+            "app.api.v1.endpoints.admin_ai_tasks.mark_stale_failed_ai_task",
+            new_callable=AsyncMock,
+            return_value=out,
+        ),
+    ):
+        denied = client.post(
+            f"/api/v1/admin/ai-tasks/{out.id}/mark-stale-failed",
+            json={"expected_updated_at": ts},
+        )
+    assert denied.status_code == 403
+
+    with (
+        _client_for(_user(*SYSTEM_ADMIN_PERMS)) as client,
+        patch(
+            "app.api.v1.endpoints.admin_ai_tasks.mark_stale_failed_ai_task",
+            new_callable=AsyncMock,
+            return_value=out,
+        ) as mark,
+    ):
+        ok = client.post(
+            f"/api/v1/admin/ai-tasks/{out.id}/mark-stale-failed",
+            json={"expected_updated_at": ts},
+        )
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "stale_running_recovered"
+    assert set(body) == {"id", "status", "error_code", "updated_at", "finished_at"}
+    assert "task_type" not in body
+    mark.assert_awaited()
+
+
+def test_admin_mark_stale_failed_path_string_locked() -> None:
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[3]
+        / "app"
+        / "api"
+        / "v1"
+        / "endpoints"
+        / "admin_ai_tasks.py"
+    ).read_text(encoding="utf-8")
+    assert '"/{task_id}/mark-stale-failed"' in src
+    assert "response_model=MarkStaleFailedAITaskOut" in src
+    assert src.count("mark-stale") == 1
+    assert "stale-running" not in src
+    assert "recover-stale" not in src
+
+
+def test_admin_mark_stale_failed_interview_question_generate_returns_200(
+    lifespan_patches,
+) -> None:
+    from app.schemas.ai_task import MarkStaleFailedAITaskOut
+
+    task_id = uuid4()
+    out = MarkStaleFailedAITaskOut.model_validate(
+        _mark_stale_out_payload(id=str(task_id))
+    )
+    ts = datetime.now(UTC).isoformat()
+    with (
+        _client_for(_user(*SYSTEM_ADMIN_PERMS)) as client,
+        patch(
+            "app.api.v1.endpoints.admin_ai_tasks.mark_stale_failed_ai_task",
+            new_callable=AsyncMock,
+            return_value=out,
+        ) as mark,
+    ):
+        response = client.post(
+            f"/api/v1/admin/ai-tasks/{task_id}/mark-stale-failed",
+            json={"expected_updated_at": ts},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(task_id)
+    assert body["status"] == "failed"
+    assert body["error_code"] == "stale_running_recovered"
+    assert "updated_at" in body and "finished_at" in body
+    assert "task_type" not in body
+    mark.assert_awaited()

@@ -11,12 +11,15 @@ from app.schemas.ai_task import (
     AITaskAdminDetailOut,
     AITaskAdminListResponse,
     CancelAITaskRequest,
+    MarkStaleFailedAITaskIn,
+    MarkStaleFailedAITaskOut,
 )
 from app.services.ai_tasks import (
     AITaskStateError,
     cancel_ai_task,
     get_admin_ai_task,
     list_admin_ai_tasks,
+    mark_stale_failed_ai_task,
     retry_ai_task,
 )
 from app.services.audit import RequestContext
@@ -117,6 +120,28 @@ async def cancel_admin_ai_task_endpoint(
             reason=(payload.reason if payload else None),
         )
         return await get_admin_ai_task(session, task_id)
+    except Exception as exc:
+        if isinstance(exc, (AITaskNotFoundError, AITaskStateError)):
+            raise _map_service_error(exc) from exc
+        raise
+
+
+@router.post("/{task_id}/mark-stale-failed", response_model=MarkStaleFailedAITaskOut)
+async def mark_stale_failed_admin_ai_task_endpoint(
+    task_id: UUID,
+    payload: MarkStaleFailedAITaskIn,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+    actor: User = Depends(require_permission("ai_task.manage")),
+) -> MarkStaleFailedAITaskOut:
+    try:
+        return await mark_stale_failed_ai_task(
+            session,
+            task_id=task_id,
+            expected_updated_at=payload.expected_updated_at,
+            actor=actor,
+            request_context=_request_context(request),
+        )
     except Exception as exc:
         if isinstance(exc, (AITaskNotFoundError, AITaskStateError)):
             raise _map_service_error(exc) from exc

@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models import User
 from app.models.ai_task import (
@@ -1070,12 +1071,13 @@ async def persist_analysis_generation_result(
         if evidence_rows:
             await create_analysis_evidence(session, evidence_rows)
         for dim_row, packed in zip(dim_rows, encrypted_dims, strict=True):
-            dim_row.evidence = [
+            evidence_for_dim = [
                 row
                 for row in evidence_rows
                 if row.analysis_dimension_id == dim_row.id
             ]
-        analysis_version.dimensions = dim_rows
+            set_committed_value(dim_row, "evidence", evidence_for_dim)
+        set_committed_value(analysis_version, "dimensions", dim_rows)
         analysis.current_version_id = analysis_version.id
         analysis.updated_at = _now()
         await session.flush()

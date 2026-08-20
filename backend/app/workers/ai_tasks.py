@@ -401,6 +401,59 @@ async def _process_sensitive_ai_task_async(task_id: UUID) -> dict:
     return await _process_ai_task_async(task_id)
 
 
+def _scrubbed_persist_error_message(exc: BaseException) -> str:
+    return f"orm_persistence:{type(exc).__name__}"
+
+
+async def _reassert_running_ownership_for_terminal(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    attempt_id: UUID,
+) -> AITask | None:
+    """SELECT … FOR UPDATE; return task only if still running with this attempt."""
+    task = (
+        await session.execute(
+            select(AITask).where(AITask.id == task_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if task is None or task.status != AI_TASK_STATUS_RUNNING:
+        observed = task.status if task is not None else "missing"
+        logger.info(
+            "ai task %s skip terminal write: observed_status=%s error_type=stale_owner",
+            task_id,
+            observed,
+        )
+        return None
+    attempt = (
+        await session.execute(
+            select(AITaskAttempt).where(AITaskAttempt.id == attempt_id)
+        )
+    ).scalar_one_or_none()
+    if attempt is None or attempt.status != AI_TASK_STATUS_RUNNING:
+        logger.info(
+            "ai task %s skip terminal write: observed_status=%s error_type=stale_attempt",
+            task_id,
+            task.status,
+        )
+        return None
+    return task
+
+
+async def _skipped_stale_owner_result(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    attempt_no: int,
+) -> dict:
+    task = await get_ai_task_by_id(session, task_id, with_attempts=False)
+    return {
+        "status": "skipped_stale_owner",
+        "observed_status": task.status if task is not None else "missing",
+        "attempt_no": attempt_no,
+    }
+
+
 async def _after_task_success(
     session: AsyncSession,
     *,
@@ -626,6 +679,19 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
                 session, task=task, outcome=outcome
             )
         except _STAGE8_OUTPUT_INVALID_EXCEPTIONS as exc:
+            owned = await _reassert_running_ownership_for_terminal(
+                session, task_id=task_id, attempt_id=attempt_id
+            )
+            if owned is None:
+                return await _skipped_stale_owner_result(
+                    session, task_id=task_id, attempt_no=attempt_no
+                )
+            task = owned
+            attempt = (
+                await session.execute(
+                    select(AITaskAttempt).where(AITaskAttempt.id == attempt_id)
+                )
+            ).scalar_one()
             task.status = AI_TASK_STATUS_OUTPUT_INVALID
             task.error_code = _output_invalid_code(exc)
             task.error_message = str(exc)
@@ -647,7 +713,54 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
                 await _after_task_failure(session, task=task)
             await session.commit()
             return {"status": AI_TASK_STATUS_OUTPUT_INVALID, "attempt_no": attempt_no}
+        except Exception as exc:
+            owned = await _reassert_running_ownership_for_terminal(
+                session, task_id=task_id, attempt_id=attempt_id
+            )
+            if owned is None:
+                return await _skipped_stale_owner_result(
+                    session, task_id=task_id, attempt_no=attempt_no
+                )
+            task = owned
+            attempt = (
+                await session.execute(
+                    select(AITaskAttempt).where(AITaskAttempt.id == attempt_id)
+                )
+            ).scalar_one()
+            scrubbed = _scrubbed_persist_error_message(exc)
+            task.status = AI_TASK_STATUS_FAILED
+            task.error_code = "persist_failed"
+            task.error_message = scrubbed
+            task.error_category = "non_retryable"
+            task.finished_at = finished
+            task.updated_at = finished
+            attempt.status = AI_TASK_STATUS_FAILED
+            attempt.error_category = "non_retryable"
+            attempt.error_message = scrubbed
+            if task_type in STAGE8_TASK_TYPES:
+                _write_stage8_raw(
+                    task=task,
+                    attempt=attempt,
+                    provider_input=provider_input,
+                    outcome=outcome,
+                    extra={"persist_error_type": type(exc).__name__},
+                )
+            await session.commit()
+            return {"status": AI_TASK_STATUS_FAILED, "attempt_no": attempt_no}
 
+        owned = await _reassert_running_ownership_for_terminal(
+            session, task_id=task_id, attempt_id=attempt_id
+        )
+        if owned is None:
+            return await _skipped_stale_owner_result(
+                session, task_id=task_id, attempt_no=attempt_no
+            )
+        task = owned
+        attempt = (
+            await session.execute(
+                select(AITaskAttempt).where(AITaskAttempt.id == attempt_id)
+            )
+        ).scalar_one()
         task.status = AI_TASK_STATUS_SUCCEEDED
         if task_type in STAGE8_TASK_TYPES:
             _write_stage8_raw(
@@ -665,28 +778,59 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
         await session.commit()
         return {"status": AI_TASK_STATUS_SUCCEEDED, "attempt_no": attempt_no}
 
-    # failure path
-    task.error_code = outcome.error_code or "provider_error"
-    task.error_message = outcome.error_message or "AI provider failed"
-    task.error_category = outcome.error_category or "non_retryable"
-    attempt.status = AI_TASK_STATUS_FAILED
-    attempt.error_category = task.error_category
-    attempt.error_message = task.error_message
-
+    # failure path — ownership check before any terminal mutation/commit
     if outcome.error_code == "output_validation_failed" or load_error is not None:
+        owned = await _reassert_running_ownership_for_terminal(
+            session, task_id=task_id, attempt_id=attempt_id
+        )
+        if owned is None:
+            return await _skipped_stale_owner_result(
+                session, task_id=task_id, attempt_no=attempt_no
+            )
+        task = owned
+        attempt = (
+            await session.execute(
+                select(AITaskAttempt).where(AITaskAttempt.id == attempt_id)
+            )
+        ).scalar_one()
+        task.error_code = outcome.error_code or "provider_error"
+        task.error_message = outcome.error_message or "AI provider failed"
+        task.error_category = outcome.error_category or "non_retryable"
         task.status = AI_TASK_STATUS_OUTPUT_INVALID
         task.finished_at = finished
         task.updated_at = finished
         attempt.status = AI_TASK_STATUS_OUTPUT_INVALID
+        attempt.error_category = task.error_category
+        attempt.error_message = task.error_message
         if task_type not in STAGE8_TASK_TYPES:
             await _after_task_failure(session, task=task)
         await session.commit()
         return {"status": AI_TASK_STATUS_OUTPUT_INVALID, "attempt_no": attempt_no}
 
+    error_category = outcome.error_category or "non_retryable"
     if should_auto_retry(
-        error_category=task.error_category,
+        error_category=error_category,
         cycle_attempt_count=task.cycle_attempt_count,
     ):
+        owned = await _reassert_running_ownership_for_terminal(
+            session, task_id=task_id, attempt_id=attempt_id
+        )
+        if owned is None:
+            return await _skipped_stale_owner_result(
+                session, task_id=task_id, attempt_no=attempt_no
+            )
+        task = owned
+        attempt = (
+            await session.execute(
+                select(AITaskAttempt).where(AITaskAttempt.id == attempt_id)
+            )
+        ).scalar_one()
+        task.error_code = outcome.error_code or "provider_error"
+        task.error_message = outcome.error_message or "AI provider failed"
+        task.error_category = error_category
+        attempt.status = AI_TASK_STATUS_FAILED
+        attempt.error_category = error_category
+        attempt.error_message = task.error_message
         countdown = retry_countdown_seconds(task.cycle_attempt_count) or 10
         task.status = AI_TASK_STATUS_PENDING
         task.finished_at = None
@@ -701,9 +845,28 @@ async def _handle_process(session: AsyncSession, task_id: UUID) -> dict:
             "cycle_attempt_no": cycle_attempt_no,
         }
 
+    owned = await _reassert_running_ownership_for_terminal(
+        session, task_id=task_id, attempt_id=attempt_id
+    )
+    if owned is None:
+        return await _skipped_stale_owner_result(
+            session, task_id=task_id, attempt_no=attempt_no
+        )
+    task = owned
+    attempt = (
+        await session.execute(
+            select(AITaskAttempt).where(AITaskAttempt.id == attempt_id)
+        )
+    ).scalar_one()
+    task.error_code = outcome.error_code or "provider_error"
+    task.error_message = outcome.error_message or "AI provider failed"
+    task.error_category = error_category
     task.status = AI_TASK_STATUS_FAILED
     task.finished_at = finished
     task.updated_at = finished
+    attempt.status = AI_TASK_STATUS_FAILED
+    attempt.error_category = error_category
+    attempt.error_message = task.error_message
     if task_type not in STAGE8_TASK_TYPES:
         await _after_task_failure(session, task=task)
     await session.commit()
