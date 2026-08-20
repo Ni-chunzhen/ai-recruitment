@@ -285,6 +285,35 @@ async def test_analyze_stays_mocked_when_question_live_enabled(monkeypatch) -> N
     get_settings.cache_clear()
 
 
+@pytest.mark.asyncio
+async def test_run_dify_analyze_still_unconditional_mock(monkeypatch) -> None:
+    """ANALYZE must call run_mock once and never _post_workflow (even if live env on)."""
+    from unittest.mock import AsyncMock
+
+    from app.services.ai_providers import mock as mock_provider
+
+    _set_question_live_env(monkeypatch, enabled="true")
+    posted = _bind_post_counter(monkeypatch)
+    mock_outcome = ProviderOutcome(
+        ok=True,
+        result={"dimensions": [], "overall_summary": "x"},
+        raw_request={"provider": "mock"},
+    )
+    run_mock = AsyncMock(return_value=mock_outcome)
+    monkeypatch.setattr(mock_provider, "run_mock", run_mock)
+
+    out = await dify.run_dify(
+        task_type=TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+        input_snapshot={"dimensions": [{"dimension_key": "D001"}], "segments": []},
+    )
+
+    assert out is mock_outcome
+    assert run_mock.await_count == 1
+    assert run_mock.await_args.kwargs["task_type"] == TASK_TYPE_INTERVIEW_ROUND_ANALYZE
+    assert posted["n"] == 0
+    get_settings.cache_clear()
+
+
 def _valid_question_item(
     *,
     display_order: int = 1,

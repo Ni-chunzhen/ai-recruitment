@@ -20,6 +20,7 @@ from app.models.ai_task import (
     AI_TASK_STATUS_PENDING,
     AI_TASK_STATUS_RUNNING,
     AI_TASK_STATUS_SUCCEEDED,
+    SENSITIVE_AI_TASK_TYPES,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_RESUME_PARSE,
@@ -300,7 +301,7 @@ def _worker_request_context(task: AITask) -> RequestContext:
 
 
 def _enqueue_retry_for_task(task: AITask, *, countdown: int) -> None:
-    if task.task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+    if task.task_type in SENSITIVE_AI_TASK_TYPES:
         process_sensitive_ai_task.apply_async(args=[str(task.id)], countdown=countdown)
     else:
         process_ai_task.apply_async(args=[str(task.id)], countdown=countdown)
@@ -317,15 +318,15 @@ async def _process_ai_task_async(task_id: UUID) -> dict:
         await engine.dispose()
 
 
-async def _maybe_reroute_question_from_default(task_id: UUID) -> dict | None:
-    """If task is question-generate, reroute once to sensitive entry (pre-claim)."""
+async def _maybe_reroute_sensitive_from_default(task_id: UUID) -> dict | None:
+    """If task is stage-8 interview AI, reroute once to sensitive entry (pre-claim)."""
     settings = get_settings()
     engine = create_database_engine(settings.database_url)
     session_factory = create_session_factory(engine)
     try:
         async with session_factory() as session:
             task = await get_ai_task_by_id(session, task_id, with_attempts=False)
-            if task is None or task.task_type != TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+            if task is None or task.task_type not in SENSITIVE_AI_TASK_TYPES:
                 return None
             try:
                 process_sensitive_ai_task.apply_async(
@@ -355,13 +356,13 @@ async def _maybe_reroute_question_from_default(task_id: UUID) -> dict | None:
                 )
                 return {
                     "status": "reroute_failed",
-                    "reason": "question_generate_requires_sensitive_queue",
+                    "reason": "interview_ai_requires_sensitive_queue",
                     "task_id": str(task_id),
                     "error_type": type(exc).__name__,
                 }
             return {
                 "status": "rerouted",
-                "reason": "question_generate_requires_sensitive_queue",
+                "reason": "interview_ai_requires_sensitive_queue",
                 "task_id": str(task_id),
             }
     finally:
@@ -369,7 +370,7 @@ async def _maybe_reroute_question_from_default(task_id: UUID) -> dict | None:
 
 
 async def _process_default_ai_task_async(task_id: UUID) -> dict:
-    rerouted = await _maybe_reroute_question_from_default(task_id)
+    rerouted = await _maybe_reroute_sensitive_from_default(task_id)
     if rerouted is not None:
         return rerouted
     return await _process_ai_task_async(task_id)
@@ -385,7 +386,7 @@ async def _process_sensitive_ai_task_async(task_id: UUID) -> dict:
             if task is None:
                 logger.warning("ai task %s not found (sensitive)", task_id)
                 return {"status": "missing"}
-            if task.task_type != TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
+            if task.task_type not in SENSITIVE_AI_TASK_TYPES:
                 logger.info(
                     "sensitive entry rejected task %s type=%s",
                     task_id,

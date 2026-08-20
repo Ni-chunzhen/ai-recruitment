@@ -643,3 +643,78 @@ def test_admin_mark_stale_failed_interview_question_generate_returns_200(
     assert "updated_at" in body and "finished_at" in body
     assert "task_type" not in body
     mark.assert_awaited()
+
+
+def test_admin_cancel_pending_question_returns_200_with_task_type(
+    lifespan_patches,
+) -> None:
+    detail = _admin_detail(
+        {
+            "task_type": "INTERVIEW_QUESTION_GENERATE",
+            "business_type": "interview_round",
+            "status": "cancelled",
+            "error_category": None,
+            "error_code": None,
+            "error_message": None,
+            "attempts": [],
+        }
+    )
+    with (
+        _client_for(_user(*SYSTEM_ADMIN_PERMS)) as client,
+        patch(
+            "app.api.v1.endpoints.admin_ai_tasks.cancel_ai_task",
+            new_callable=AsyncMock,
+        ) as cancel,
+        patch(
+            "app.api.v1.endpoints.admin_ai_tasks.get_admin_ai_task",
+            new_callable=AsyncMock,
+            return_value=detail,
+        ),
+    ):
+        response = client.post(
+            f"/api/v1/admin/ai-tasks/{detail.id}/cancel",
+            json={"reason": "ops cancel question"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_type"] == "INTERVIEW_QUESTION_GENERATE"
+    assert body["status"] == "cancelled"
+    cancel.assert_awaited()
+
+
+def test_admin_retry_failed_analyze_returns_200_with_task_type(
+    lifespan_patches,
+) -> None:
+    detail = _admin_detail(
+        {
+            "task_type": "INTERVIEW_ROUND_ANALYZE",
+            "business_type": "interview_round",
+            "status": "pending",
+            "error_category": None,
+            "error_code": None,
+            "error_message": None,
+            "attempts": [],
+        }
+    )
+    with (
+        _client_for(_user(*SYSTEM_ADMIN_PERMS)) as client,
+        patch(
+            "app.services.ai_tasks.enqueue_sensitive_interview_ai_task",
+        ) as enqueue_sensitive,
+        patch(
+            "app.api.v1.endpoints.admin_ai_tasks.retry_ai_task",
+            new_callable=AsyncMock,
+        ) as retry,
+        patch(
+            "app.api.v1.endpoints.admin_ai_tasks.get_admin_ai_task",
+            new_callable=AsyncMock,
+            return_value=detail,
+        ),
+    ):
+        response = client.post(f"/api/v1/admin/ai-tasks/{detail.id}/retry")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task_type"] == "INTERVIEW_ROUND_ANALYZE"
+    assert body["status"] == "pending"
+    retry.assert_awaited()
+    enqueue_sensitive.assert_not_called()

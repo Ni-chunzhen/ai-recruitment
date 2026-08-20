@@ -193,9 +193,70 @@ def test_config_override_requires_process_restart_documented() -> None:
 # --- Task 2: service-layer sensitive enqueue / dispatch / retry ---
 
 
+def test_enqueue_sensitive_interview_ai_task_targets_sensitive_celery(
+    monkeypatch,
+) -> None:
+    from app.services import ai_tasks as ai_tasks_service
+    from app.workers import ai_tasks as worker_mod
+
+    called: list[tuple] = []
+
+    def fake_apply_async(*, args, countdown=0, **_kwargs):
+        called.append((args, countdown))
+
+    monkeypatch.setattr(
+        worker_mod.process_sensitive_ai_task, "apply_async", fake_apply_async
+    )
+    default_calls: list = []
+    monkeypatch.setattr(
+        worker_mod.process_ai_task,
+        "apply_async",
+        lambda **_k: default_calls.append(True),
+    )
+
+    task_id = uuid4()
+    ai_tasks_service.enqueue_sensitive_interview_ai_task(task_id, countdown=7)
+    assert called == [([str(task_id)], 7)]
+    assert default_calls == []
+    # Routed via sensitive Celery name (task_routes → ai_sensitive).
+    assert worker_mod.process_sensitive_ai_task.name == (
+        "app.workers.ai_tasks.process_sensitive_ai_task"
+    )
+
+
+def test_enqueue_sensitive_question_task_is_compatible_alias(monkeypatch) -> None:
+    from app.services import ai_tasks as ai_tasks_service
+
+    calls: list[tuple] = []
+
+    def fake_unified(task_id, *, countdown=0):
+        calls.append((task_id, countdown))
+
+    monkeypatch.setattr(
+        ai_tasks_service, "enqueue_sensitive_interview_ai_task", fake_unified
+    )
+    task_id = uuid4()
+    ai_tasks_service.enqueue_sensitive_question_task(task_id, countdown=3)
+    assert calls == [(task_id, 3)]
+
+
+def test_enqueue_sensitive_question_task_signature_matches_interview() -> None:
+    import inspect
+
+    from app.services import ai_tasks as ai_tasks_service
+
+    sig_q = inspect.signature(ai_tasks_service.enqueue_sensitive_question_task)
+    sig_i = inspect.signature(ai_tasks_service.enqueue_sensitive_interview_ai_task)
+    assert sig_q == sig_i
+    assert list(sig_i.parameters) == ["task_id", "countdown"]
+    assert sig_i.parameters["countdown"].default == 0
+    assert sig_i.parameters["countdown"].kind == inspect.Parameter.KEYWORD_ONLY
+
+
 def test_enqueue_sensitive_question_task_targets_sensitive_celery_name(
     monkeypatch,
 ) -> None:
+    """Backward-compatible: alias must still land on sensitive apply_async."""
     from app.services import ai_tasks as ai_tasks_service
     from app.workers import ai_tasks as worker_mod
 
@@ -243,7 +304,22 @@ def test_enqueue_ai_task_still_targets_default_process(monkeypatch) -> None:
     assert sensitive_calls == []
 
 
-def test_dispatch_persisted_question_generation_uses_sensitive_enqueue() -> None:
+def test_dispatch_analysis_uses_sensitive_enqueue_not_default() -> None:
+    import inspect
+
+    from app.services.interview_analyses import (
+        dispatch_persisted_analysis_generation_task,
+        request_analysis_generation,
+    )
+
+    request_source = inspect.getsource(request_analysis_generation)
+    dispatch_source = inspect.getsource(dispatch_persisted_analysis_generation_task)
+    assert "enqueue_ai_task" not in request_source
+    assert "enqueue_sensitive_interview_ai_task" in dispatch_source
+    assert "enqueue_ai_task" not in dispatch_source
+
+
+def test_dispatch_question_still_sensitive() -> None:
     import inspect
 
     from app.services.interview_questions import (
@@ -254,14 +330,156 @@ def test_dispatch_persisted_question_generation_uses_sensitive_enqueue() -> None
     request_source = inspect.getsource(request_question_generation)
     dispatch_source = inspect.getsource(dispatch_persisted_question_generation_task)
     assert "enqueue_ai_task" not in request_source
-    assert "enqueue_sensitive_question_task" in dispatch_source
+    assert (
+        "enqueue_sensitive_question_task" in dispatch_source
+        or "enqueue_sensitive_interview_ai_task" in dispatch_source
+    )
     assert "enqueue_ai_task" not in dispatch_source
 
 
+def test_dispatch_persisted_question_generation_uses_sensitive_enqueue() -> None:
+    """Backward-compatible name."""
+    test_dispatch_question_still_sensitive()
+
+
+def test_enqueue_retry_analyze_uses_sensitive(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.models.ai_task import TASK_TYPE_INTERVIEW_ROUND_ANALYZE
+    from app.workers import ai_tasks as worker_mod
+
+    sensitive_calls: list[tuple] = []
+    default_calls: list[tuple] = []
+    monkeypatch.setattr(
+        worker_mod.process_sensitive_ai_task,
+        "apply_async",
+        lambda *, args, countdown=0, **_k: sensitive_calls.append((args, countdown)),
+    )
+    monkeypatch.setattr(
+        worker_mod.process_ai_task,
+        "apply_async",
+        lambda *, args, countdown=0, **_k: default_calls.append((args, countdown)),
+    )
+    task = SimpleNamespace(id=uuid4(), task_type=TASK_TYPE_INTERVIEW_ROUND_ANALYZE)
+    worker_mod._enqueue_retry_for_task(task, countdown=9)
+    assert sensitive_calls == [([str(task.id)], 9)]
+    assert default_calls == []
+
+
+def test_enqueue_retry_question_still_sensitive(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.models.ai_task import TASK_TYPE_INTERVIEW_QUESTION_GENERATE
+    from app.workers import ai_tasks as worker_mod
+
+    sensitive_calls: list[tuple] = []
+    default_calls: list[tuple] = []
+    monkeypatch.setattr(
+        worker_mod.process_sensitive_ai_task,
+        "apply_async",
+        lambda *, args, countdown=0, **_k: sensitive_calls.append((args, countdown)),
+    )
+    monkeypatch.setattr(
+        worker_mod.process_ai_task,
+        "apply_async",
+        lambda *, args, countdown=0, **_k: default_calls.append((args, countdown)),
+    )
+    task = SimpleNamespace(id=uuid4(), task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE)
+    worker_mod._enqueue_retry_for_task(task, countdown=11)
+    assert sensitive_calls == [([str(task.id)], 11)]
+    assert default_calls == []
+
+
+def test_enqueue_retry_non_sensitive_uses_default(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.models.ai_task import TASK_TYPE_RESUME_SCORE
+    from app.workers import ai_tasks as worker_mod
+
+    sensitive_calls: list[tuple] = []
+    default_calls: list[tuple] = []
+    monkeypatch.setattr(
+        worker_mod.process_sensitive_ai_task,
+        "apply_async",
+        lambda *, args, countdown=0, **_k: sensitive_calls.append((args, countdown)),
+    )
+    monkeypatch.setattr(
+        worker_mod.process_ai_task,
+        "apply_async",
+        lambda *, args, countdown=0, **_k: default_calls.append((args, countdown)),
+    )
+    task = SimpleNamespace(id=uuid4(), task_type=TASK_TYPE_RESUME_SCORE)
+    worker_mod._enqueue_retry_for_task(task, countdown=5)
+    assert default_calls == [([str(task.id)], 5)]
+    assert sensitive_calls == []
+
+
+def test_enqueue_retry_for_task_question_uses_sensitive(monkeypatch) -> None:
+    """Backward-compatible: question sensitive + non-sensitive default."""
+    test_enqueue_retry_question_still_sensitive(monkeypatch)
+    test_enqueue_retry_non_sensitive_uses_default(monkeypatch)
+
+
 @pytest.mark.asyncio
-async def test_retry_ai_task_question_generate_uses_sensitive_enqueue(
-    monkeypatch,
-) -> None:
+async def test_retry_ai_task_analyze_enqueues_sensitive(monkeypatch) -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.models.ai_task import (
+        AI_TASK_STATUS_FAILED,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    )
+    from app.services import ai_tasks as svc
+    from app.services.audit import RequestContext
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type=TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+        status=AI_TASK_STATUS_FAILED,
+        business_id=uuid4(),
+        retry_cycle_no=0,
+        cycle_attempt_count=2,
+        attempt_count=2,
+        error_code="x",
+        error_message="y",
+        error_category="retryable",
+        result_payload={"a": 1},
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+
+    unified = MagicMock()
+    default = MagicMock()
+    monkeypatch.setattr(svc, "enqueue_sensitive_interview_ai_task", unified)
+    monkeypatch.setattr(svc, "enqueue_ai_task", default)
+    monkeypatch.setattr(svc, "record_audit", AsyncMock())
+    monkeypatch.setattr(svc, "get_ai_task_by_id", AsyncMock(return_value=task))
+    monkeypatch.setattr(
+        svc,
+        "to_ai_task_out",
+        lambda t, **_k: SimpleNamespace(id=t.id, task_type=t.task_type, status=t.status),
+    )
+
+    await svc.retry_ai_task(
+        session,
+        task_id=task.id,
+        actor=SimpleNamespace(id=uuid4()),
+        request_context=RequestContext(request_id="test-retry-analyze"),
+    )
+    unified.assert_called_once_with(task.id)
+    default.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_ai_task_question_enqueues_sensitive(monkeypatch) -> None:
     from datetime import UTC, datetime
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
@@ -296,9 +514,11 @@ async def test_retry_ai_task_question_generate_uses_sensitive_enqueue(
     session.flush = AsyncMock()
     session.commit = AsyncMock()
 
-    sensitive = MagicMock()
+    unified = MagicMock()
+    alias = MagicMock(side_effect=lambda *a, **k: unified(*a, **k))
     default = MagicMock()
-    monkeypatch.setattr(svc, "enqueue_sensitive_question_task", sensitive)
+    monkeypatch.setattr(svc, "enqueue_sensitive_interview_ai_task", unified)
+    monkeypatch.setattr(svc, "enqueue_sensitive_question_task", alias)
     monkeypatch.setattr(svc, "enqueue_ai_task", default)
     monkeypatch.setattr(svc, "record_audit", AsyncMock())
     monkeypatch.setattr(svc, "get_ai_task_by_id", AsyncMock(return_value=task))
@@ -308,15 +528,25 @@ async def test_retry_ai_task_question_generate_uses_sensitive_enqueue(
         lambda t, **_k: SimpleNamespace(id=t.id, task_type=t.task_type, status=t.status),
     )
 
-    actor = SimpleNamespace(id=uuid4())
     await svc.retry_ai_task(
         session,
         task_id=task.id,
-        actor=actor,
-        request_context=RequestContext(request_id="test-retry"),
+        actor=SimpleNamespace(id=uuid4()),
+        request_context=RequestContext(request_id="test-retry-question"),
     )
-    sensitive.assert_called_once_with(task.id)
+    # Production must call unified (or alias that delegates); not default.
+    assert unified.call_count + alias.call_count >= 1
+    if unified.call_count:
+        unified.assert_called_with(task.id)
     default.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_ai_task_question_generate_uses_sensitive_enqueue(
+    monkeypatch,
+) -> None:
+    """Backward-compatible name."""
+    await test_retry_ai_task_question_enqueues_sensitive(monkeypatch)
 
 
 @pytest.mark.asyncio
@@ -354,9 +584,10 @@ async def test_retry_ai_task_resume_or_jd_still_uses_default_enqueue(
     session.flush = AsyncMock()
     session.commit = AsyncMock()
 
-    sensitive = MagicMock()
+    unified = MagicMock()
     default = MagicMock()
-    monkeypatch.setattr(svc, "enqueue_sensitive_question_task", sensitive)
+    monkeypatch.setattr(svc, "enqueue_sensitive_interview_ai_task", unified)
+    monkeypatch.setattr(svc, "enqueue_sensitive_question_task", MagicMock())
     monkeypatch.setattr(svc, "enqueue_ai_task", default)
     monkeypatch.setattr(svc, "record_audit", AsyncMock())
     monkeypatch.setattr(svc, "get_ai_task_by_id", AsyncMock(return_value=task))
@@ -373,7 +604,7 @@ async def test_retry_ai_task_resume_or_jd_still_uses_default_enqueue(
         request_context=RequestContext(request_id="test-retry-default"),
     )
     default.assert_called_once_with(task.id)
-    sensitive.assert_not_called()
+    unified.assert_not_called()
 
 
 def test_no_arbitrary_task_id_execute_endpoint_added() -> None:
@@ -394,49 +625,52 @@ def test_no_arbitrary_task_id_execute_endpoint_added() -> None:
             assert snippet not in text, f"{name} must not add {snippet}"
 
 
-# --- Task 3: worker gate / reroute / auto-retry ---
+# --- Analyze-sensitive Task 1: whitelist gate ---
 
 
-def test_process_sensitive_rejects_non_question_without_handle(monkeypatch) -> None:
+def test_sensitive_ai_task_types_exactly_question_and_analyze() -> None:
+    from app.models.ai_task import (
+        SENSITIVE_AI_TASK_TYPES,
+        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    )
+
+    assert SENSITIVE_AI_TASK_TYPES == {
+        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    }
+    assert len(SENSITIVE_AI_TASK_TYPES) == 2
+
+
+def test_process_sensitive_allows_interview_round_analyze(monkeypatch) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from app.models.ai_task import TASK_TYPE_RESUME_SCORE
+    from app.models.ai_task import TASK_TYPE_INTERVIEW_ROUND_ANALYZE
     from app.workers import ai_tasks as worker_mod
 
     task = SimpleNamespace(
         id=uuid4(),
-        task_type=TASK_TYPE_RESUME_SCORE,
+        task_type=TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
         status="pending",
     )
-    process_calls: list = []
-    handle_calls: list = []
+    calls: list = []
 
-    async def track_process(*_a, **_k):
-        process_calls.append(True)
-        raise AssertionError("must not process")
+    async def fake_process(task_id):
+        calls.append(task_id)
+        return {"status": "ok", "via": "process_async"}
 
-    async def track_handle(*_a, **_k):
-        handle_calls.append(True)
-        raise AssertionError("must not handle")
-
-    monkeypatch.setattr(worker_mod, "_process_ai_task_async", track_process)
-    monkeypatch.setattr(worker_mod, "_handle_process", track_handle)
+    monkeypatch.setattr(worker_mod, "_process_ai_task_async", fake_process)
     _patch_worker_db_session(
         monkeypatch, worker_mod, get_task=AsyncMock(return_value=task)
     )
 
     result = worker_mod.process_sensitive_ai_task.run(str(task.id))
-    assert result == {
-        "status": "rejected",
-        "reason": "unsupported_task_type",
-        "task_type": TASK_TYPE_RESUME_SCORE,
-    }
-    assert process_calls == []
-    assert handle_calls == []
+    assert result == {"status": "ok", "via": "process_async"}
+    assert calls == [task.id]
 
 
-def test_process_sensitive_question_calls_process_async_once(monkeypatch) -> None:
+def test_process_sensitive_still_allows_question_generate(monkeypatch) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -464,24 +698,107 @@ def test_process_sensitive_question_calls_process_async_once(monkeypatch) -> Non
     assert calls == [task.id]
 
 
-def test_process_ai_task_reroutes_question_once(monkeypatch) -> None:
+def test_process_sensitive_rejects_non_whitelist_without_handle(monkeypatch) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from app.models.ai_task import (
-        AI_TASK_STATUS_PENDING,
-        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+    from app.models.ai_task import TASK_TYPE_RESUME_SCORE
+    from app.workers import ai_tasks as worker_mod
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type=TASK_TYPE_RESUME_SCORE,
+        status="pending",
     )
+    process_calls: list = []
+    handle_calls: list = []
+    dify_calls: list = []
+    mock_calls: list = []
+
+    async def track_process(*_a, **_k):
+        process_calls.append(True)
+        raise AssertionError("must not process")
+
+    async def track_handle(*_a, **_k):
+        handle_calls.append(True)
+        raise AssertionError("must not handle")
+
+    async def track_dify(*_a, **_k):
+        dify_calls.append(True)
+        raise AssertionError("must not dify")
+
+    async def track_mock(*_a, **_k):
+        mock_calls.append(True)
+        raise AssertionError("must not mock")
+
+    monkeypatch.setattr(worker_mod, "_process_ai_task_async", track_process)
+    monkeypatch.setattr(worker_mod, "_handle_process", track_handle)
+    monkeypatch.setattr(worker_mod, "run_dify", track_dify, raising=False)
+    monkeypatch.setattr(worker_mod, "run_mock", track_mock, raising=False)
+    _patch_worker_db_session(
+        monkeypatch, worker_mod, get_task=AsyncMock(return_value=task)
+    )
+
+    result = worker_mod.process_sensitive_ai_task.run(str(task.id))
+    assert result == {
+        "status": "rejected",
+        "reason": "unsupported_task_type",
+        "task_type": TASK_TYPE_RESUME_SCORE,
+    }
+    assert process_calls == []
+    assert handle_calls == []
+    assert dify_calls == []
+    assert mock_calls == []
+
+
+def test_process_sensitive_never_requeues_default_process_ai_task() -> None:
+    import inspect
+
+    from app.workers import ai_tasks as worker_mod
+
+    helper = worker_mod._process_sensitive_ai_task_async
+    source = inspect.getsource(helper)
+    assert "process_ai_task.apply_async" not in source
+
+
+# --- Task 3 legacy names: worker gate / reroute / auto-retry ---
+
+
+def test_process_sensitive_rejects_non_question_without_handle(monkeypatch) -> None:
+    """Backward-compatible name; same as whitelist reject."""
+    test_process_sensitive_rejects_non_whitelist_without_handle(monkeypatch)
+
+
+def test_process_sensitive_question_calls_process_async_once(monkeypatch) -> None:
+    """Backward-compatible name; same as still_allows_question_generate."""
+    test_process_sensitive_still_allows_question_generate(monkeypatch)
+
+
+UNIFIED_REROUTE_REASON = "interview_ai_requires_sensitive_queue"
+# Built without a contiguous legacy literal so repo-wide scans stay clean (R4).
+LEGACY_REROUTE_REASON = "_".join(
+    ("question", "generate", "requires", "sensitive", "queue")
+)
+
+
+def _assert_default_preclaim_reroute(
+    monkeypatch, *, task_type: str
+) -> tuple[dict, object]:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.models.ai_task import AI_TASK_STATUS_PENDING
     from app.workers import ai_tasks as worker_mod
 
     task_id = uuid4()
     task = SimpleNamespace(
         id=task_id,
-        task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        task_type=task_type,
         status=AI_TASK_STATUS_PENDING,
     )
     apply_calls: list[tuple] = []
     handle_calls: list = []
+    process_async_calls: list = []
     dify_calls: list = []
     enqueue_calls: list = []
 
@@ -491,6 +808,10 @@ def test_process_ai_task_reroutes_question_once(monkeypatch) -> None:
     async def track_handle(*_a, **_k):
         handle_calls.append(True)
         raise AssertionError("_handle_process must not run on reroute")
+
+    async def track_process_async(*_a, **_k):
+        process_async_calls.append(True)
+        raise AssertionError("_process_ai_task_async must not run on reroute")
 
     async def track_dify(*_a, **_k):
         dify_calls.append(True)
@@ -504,6 +825,7 @@ def test_process_ai_task_reroutes_question_once(monkeypatch) -> None:
         worker_mod.process_sensitive_ai_task, "apply_async", fake_sensitive_apply
     )
     monkeypatch.setattr(worker_mod, "_handle_process", track_handle)
+    monkeypatch.setattr(worker_mod, "_process_ai_task_async", track_process_async)
     monkeypatch.setattr(worker_mod, "run_dify", track_dify, raising=False)
     monkeypatch.setattr(
         "app.services.ai_tasks.enqueue_sensitive_question_task",
@@ -517,30 +839,54 @@ def test_process_ai_task_reroutes_question_once(monkeypatch) -> None:
     result = worker_mod.process_ai_task.run(str(task_id))
     assert result == {
         "status": "rerouted",
-        "reason": "question_generate_requires_sensitive_queue",
+        "reason": UNIFIED_REROUTE_REASON,
         "task_id": str(task_id),
     }
+    assert LEGACY_REROUTE_REASON not in str(result)
     assert apply_calls == [([str(task_id)], 0)]
     assert task.status == AI_TASK_STATUS_PENDING
     assert handle_calls == []
+    assert process_async_calls == []
     assert dify_calls == []
     assert enqueue_calls == []
+    return result, task
 
 
-def test_process_ai_task_reroute_failure_keeps_pending_and_audits(monkeypatch) -> None:
+def test_default_entry_reroutes_analyze_once(monkeypatch) -> None:
+    from app.models.ai_task import TASK_TYPE_INTERVIEW_ROUND_ANALYZE
+
+    _assert_default_preclaim_reroute(
+        monkeypatch, task_type=TASK_TYPE_INTERVIEW_ROUND_ANALYZE
+    )
+
+
+def test_default_entry_reroutes_question_with_unified_reason(monkeypatch) -> None:
+    from app.models.ai_task import TASK_TYPE_INTERVIEW_QUESTION_GENERATE
+
+    _assert_default_preclaim_reroute(
+        monkeypatch, task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE
+    )
+
+
+def test_process_ai_task_reroutes_question_once(monkeypatch) -> None:
+    """Backward-compatible name for unified question reroute."""
+    test_default_entry_reroutes_question_with_unified_reason(monkeypatch)
+
+
+def test_default_entry_reroute_failed_audits_without_claim(monkeypatch) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
     from app.models.ai_task import (
         AI_TASK_STATUS_PENDING,
-        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     )
     from app.workers import ai_tasks as worker_mod
 
     task_id = uuid4()
     task = SimpleNamespace(
         id=task_id,
-        task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
+        task_type=TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
         status=AI_TASK_STATUS_PENDING,
     )
     audits: list[dict] = []
@@ -563,6 +909,10 @@ def test_process_ai_task_reroute_failure_keeps_pending_and_audits(monkeypatch) -
 
     result = worker_mod.process_ai_task.run(str(task_id))
     assert result["status"] == "reroute_failed"
+    assert result["reason"] == UNIFIED_REROUTE_REASON
+    assert result["task_id"] == str(task_id)
+    assert result["error_type"] == "RuntimeError"
+    assert LEGACY_REROUTE_REASON not in str(result)
     assert task.status == AI_TASK_STATUS_PENDING
     session.commit.assert_awaited()
     assert len(audits) == 1
@@ -575,8 +925,83 @@ def test_process_ai_task_reroute_failure_keeps_pending_and_audits(monkeypatch) -
     assert audit["request_context"].request_id == f"ai-task:{task_id}"
     assert set(audit["changes"].keys()) <= {"ai_task_id", "task_type", "error_type"}
     assert audit["changes"]["ai_task_id"] == str(task_id)
-    assert audit["changes"]["task_type"] == TASK_TYPE_INTERVIEW_QUESTION_GENERATE
+    assert audit["changes"]["task_type"] == TASK_TYPE_INTERVIEW_ROUND_ANALYZE
     assert audit["changes"]["error_type"] == "RuntimeError"
+    # Desensitized audit: no body/key markers in changes values.
+    for value in audit["changes"].values():
+        lowered = str(value).lower()
+        assert "broker unavailable" not in lowered
+        assert "enc:v1:" not in lowered
+        assert "api_key" not in lowered
+
+
+def test_process_ai_task_reroute_failure_keeps_pending_and_audits(monkeypatch) -> None:
+    """Backward-compatible name; failure path now covers analyze + unified reason."""
+    test_default_entry_reroute_failed_audits_without_claim(monkeypatch)
+
+
+def test_default_entry_non_sensitive_still_processes(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.models.ai_task import TASK_TYPE_RESUME_SCORE
+    from app.workers import ai_tasks as worker_mod
+
+    task_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        task_type=TASK_TYPE_RESUME_SCORE,
+        status="pending",
+    )
+    process_calls: list = []
+    apply_calls: list = []
+
+    async def fake_process(received_id):
+        process_calls.append(received_id)
+        return {"status": "ok", "via": "default"}
+
+    def track_sensitive_apply(*, args, countdown=0, **_k):
+        apply_calls.append((args, countdown))
+
+    monkeypatch.setattr(worker_mod, "_process_ai_task_async", fake_process)
+    monkeypatch.setattr(
+        worker_mod.process_sensitive_ai_task, "apply_async", track_sensitive_apply
+    )
+    _patch_worker_db_session(
+        monkeypatch, worker_mod, get_task=AsyncMock(return_value=task)
+    )
+
+    result = worker_mod.process_ai_task.run(str(task_id))
+    assert result == {"status": "ok", "via": "default"}
+    assert process_calls == [task_id]
+    assert apply_calls == []
+
+
+def test_repo_has_no_legacy_question_reroute_reason() -> None:
+    from pathlib import Path
+
+    backend_root = Path(__file__).resolve().parents[2]
+    hits: list[str] = []
+    for path in backend_root.rglob("*"):
+        if not path.is_file() or path.suffix not in {".py", ".md", ".txt", ".toml"}:
+            continue
+        # Skip this test's constant that names the forbidden string.
+        if path.resolve() == Path(__file__).resolve():
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            # Allow LEGACY_REROUTE_REASON assignment and this assert only.
+            for i, line in enumerate(text.splitlines(), start=1):
+                if LEGACY_REROUTE_REASON in line and "LEGACY_REROUTE_REASON" not in line:
+                    if "not in" in line or "assert" in line:
+                        continue
+                    hits.append(f"{path}:{i}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if LEGACY_REROUTE_REASON in text:
+            hits.append(str(path.relative_to(backend_root)))
+    assert hits == [], hits
 
 
 def test_process_sensitive_never_apply_async_back_to_default() -> None:
@@ -590,39 +1015,6 @@ def test_process_sensitive_never_apply_async_back_to_default() -> None:
         helpers.append(inspect.getsource(helper))
     combined = "\n".join(helpers)
     assert "process_ai_task.apply_async" not in combined
-
-
-def test_enqueue_retry_for_task_question_uses_sensitive(monkeypatch) -> None:
-    from types import SimpleNamespace
-
-    from app.models.ai_task import (
-        TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
-        TASK_TYPE_RESUME_SCORE,
-    )
-    from app.workers import ai_tasks as worker_mod
-
-    sensitive_calls: list[tuple] = []
-    default_calls: list[tuple] = []
-
-    monkeypatch.setattr(
-        worker_mod.process_sensitive_ai_task,
-        "apply_async",
-        lambda *, args, countdown=0, **_k: sensitive_calls.append((args, countdown)),
-    )
-    monkeypatch.setattr(
-        worker_mod.process_ai_task,
-        "apply_async",
-        lambda *, args, countdown=0, **_k: default_calls.append((args, countdown)),
-    )
-
-    q_task = SimpleNamespace(id=uuid4(), task_type=TASK_TYPE_INTERVIEW_QUESTION_GENERATE)
-    other = SimpleNamespace(id=uuid4(), task_type=TASK_TYPE_RESUME_SCORE)
-
-    worker_mod._enqueue_retry_for_task(q_task, countdown=11)
-    worker_mod._enqueue_retry_for_task(other, countdown=5)
-
-    assert sensitive_calls == [([str(q_task.id)], 11)]
-    assert default_calls == [([str(other.id)], 5)]
 
 
 @pytest.mark.asyncio

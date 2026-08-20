@@ -624,7 +624,9 @@ def _patch_base(
     )
     monkeypatch.setattr(f"{MODULE}.list_analysis_version_rows", fake_list)
     enqueue = MagicMock()
-    monkeypatch.setattr(f"{MODULE}.enqueue_ai_task", enqueue, raising=False)
+    monkeypatch.setattr(
+        f"{MODULE}.enqueue_sensitive_interview_ai_task", enqueue, raising=False
+    )
     session = AsyncMock()
     return SimpleNamespace(
         session=session,
@@ -818,6 +820,29 @@ async def test_missing_confirmed_version_rejected(
 
 
 @pytest.mark.asyncio
+async def test_analysis_generate_rejects_without_confirmed_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.interview_analyses import request_analysis_generation
+
+    round_ = _make_round()
+    transcript, versions = _transcript(round_, with_c1=False)
+    env = _patch_base(
+        monkeypatch, round_, transcript=transcript, transcript_versions=versions
+    )
+    with pytest.raises(InterviewValidationError, match="确认转写"):
+        await request_analysis_generation(
+            env.session,
+            round_id=round_.id,
+            idempotency_key="no-cn-gate",
+            actor=_actor(),
+            request_context=_ctx(),
+        )
+    env.enqueue.assert_not_called()
+    assert env.added_tasks == []
+
+
+@pytest.mark.asyncio
 async def test_confirmed_version_from_other_transcript_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -998,7 +1023,8 @@ def test_service_does_not_enqueue_or_read_resume_ai() -> None:
     source = inspect.getsource(module)
     assert "enqueue_ai_task" not in request_source
     assert "session.commit" not in request_source
-    assert "enqueue_ai_task" in dispatch_source
+    assert "enqueue_sensitive_interview_ai_task" in dispatch_source
+    assert "enqueue_ai_task" not in dispatch_source
     assert "AiResult" not in source
     assert "list_ai_results" not in source
     assert "QUESTION_SET_STATUS_READY" not in source
@@ -1906,6 +1932,31 @@ async def test_list_hides_body_and_marks_stale(
 
 
 @pytest.mark.asyncio
+async def test_analysis_stale_flag_still_dynamic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.interview_analyses import list_analysis_versions
+
+    round_ = _make_round()
+    env = _patch_base(monkeypatch, round_)
+    a1 = _seed_version(
+        env, transcript_version_id=env.transcript.current_confirmed_version_id
+    )
+    listed = await list_analysis_versions(
+        env.session, round_id=round_.id, actor=_actor()
+    )
+    assert listed.versions[0].is_stale is False
+    c2 = _confirmed_version(env.transcript, label="C2")
+    env.transcript.current_confirmed_version_id = c2.id
+    env.transcript_versions.append(c2)
+    listed2 = await list_analysis_versions(
+        env.session, round_id=round_.id, actor=_actor()
+    )
+    assert listed2.versions[0].version_id == a1.id
+    assert listed2.versions[0].is_stale is True
+
+
+@pytest.mark.asyncio
 async def test_detail_decrypts_and_cross_round_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2014,3 +2065,40 @@ async def test_audit_events_are_redacted(monkeypatch: pytest.MonkeyPatch) -> Non
         _assert_safe_audit(entry)
         changes = sanitize_audit_changes(entry["changes"])
         assert changes["task_type"] == TASK_TYPE_INTERVIEW_ROUND_ANALYZE
+
+
+@pytest.mark.asyncio
+async def test_analysis_audit_changes_pass_sanitize_audit_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models import sanitize_audit_changes
+    from app.services.interview_analyses import (
+        persist_analysis_generation_result,
+        request_analysis_generation,
+    )
+
+    round_ = _make_round()
+    env = _patch_base(monkeypatch, round_)
+    actor = _actor()
+    task = await request_analysis_generation(
+        env.session,
+        round_id=round_.id,
+        idempotency_key="aud-sanitize",
+        actor=actor,
+        request_context=_ctx(),
+    )
+    await persist_analysis_generation_result(
+        env.session,
+        task_id=task.id,
+        payload=_analysis_payload(segment=env.transcript_versions[0].segments[0]),
+        actor=actor,
+        request_context=_ctx(),
+    )
+    assert env.audits
+    for entry in env.audits:
+        sanitized = sanitize_audit_changes(entry["changes"])
+        assert sanitized == entry["changes"]
+        blob = json.dumps(sanitized, ensure_ascii=False, default=str)
+        assert SECRET_ANALYSIS not in blob
+        assert SECRET_QUOTE not in blob
+        assert CIPHER_PREFIX not in blob

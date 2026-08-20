@@ -9,6 +9,8 @@ TaskType = Literal[
     "SCORE_DIMENSION_RECOMMEND",
     "RESUME_PARSE",
     "RESUME_SCORE",
+    "INTERVIEW_QUESTION_GENERATE",
+    "INTERVIEW_ROUND_ANALYZE",
 ]
 AITaskStatus = Literal[
     "pending",
