@@ -1149,4 +1149,21 @@ describe('InterviewTimelineView', () => {
     expect(wrapper.text()).not.toContain('自动决策')
     expect(wrapper.text()).not.toContain('Dify')
   })
+
+  it('shows neutral pipeline label for pending_offer to execute, business label to manage', async () => {
+    vi.mocked(interviewsApi.getInterviewTimeline).mockResolvedValue(
+      makeTimeline([makeRound()], { pipeline_status: 'pending_offer' }),
+    )
+
+    const executeWrapper = await mountReady(['interview.execute'])
+    const executeChip = executeWrapper.get('[data-test="timeline-pipeline-status"]')
+    expect(executeChip.text()).toContain('流程进行中')
+    expect(executeChip.text()).not.toContain('录用')
+    expect(executeChip.text()).not.toContain('建议')
+    expect(executeWrapper.text()).not.toContain('录用建议待后续')
+
+    const manageWrapper = await mountReady(['recruitment.manage'])
+    const manageChip = manageWrapper.get('[data-test="timeline-pipeline-status"]')
+    expect(manageChip.text()).toContain('录用建议待后续')
+  })
 })

@@ -2102,3 +2102,21 @@ async def test_analysis_audit_changes_pass_sanitize_audit_changes(
         assert SECRET_ANALYSIS not in blob
         assert SECRET_QUOTE not in blob
         assert CIPHER_PREFIX not in blob
+
+
+def test_is_analysis_version_stale_public_matches_private() -> None:
+    from app.services.interview_analyses import (
+        _is_stale,
+        is_analysis_version_stale,
+    )
+
+    confirmed = uuid4()
+    version = SimpleNamespace(transcript_version_id=confirmed)
+    assert is_analysis_version_stale(version, None) is True
+    assert _is_stale(version, None) is True
+    fresh = SimpleNamespace(current_confirmed_version_id=confirmed)
+    assert is_analysis_version_stale(version, fresh) is False
+    assert _is_stale(version, fresh) is False
+    stale = SimpleNamespace(current_confirmed_version_id=uuid4())
+    assert is_analysis_version_stale(version, stale) is True
+    assert _is_stale(version, stale) is True

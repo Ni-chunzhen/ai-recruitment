@@ -42,9 +42,9 @@ def _script() -> ScriptDirectory:
 def test_revision_012_is_head() -> None:
     script = _script()
     assert script.get_revision("012_transcript_workflow") is not None
-    # 013 is the current head; 012 remains in the linear chain.
-    assert script.get_current_head() == "013_stage8_interview_ai_foundation"
-    assert script.get_heads() == ["013_stage8_interview_ai_foundation"]
+    # 014 is the current head; 012 remains in the linear chain.
+    assert script.get_current_head() == "014_hiring_decisions"
+    assert script.get_heads() == ["014_hiring_decisions"]
 
 
 def test_012_revises_011() -> None:

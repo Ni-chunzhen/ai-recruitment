@@ -14,6 +14,7 @@ export type PipelineStatus =
   | 'pending_parse'
   | 'pending_hr_screen'
   | 'interviewing'
+  | 'pending_offer'
   | 'rejected'
   | 'talent_pool'
 
@@ -354,6 +355,7 @@ export const pipelineStatusLabel: Record<PipelineStatus, string> = {
   pending_parse: '待解析',
   pending_hr_screen: '待HR筛选',
   interviewing: '面试中',
+  pending_offer: '录用建议待后续',
   rejected: '已淘汰',
   talent_pool: '人才库',
 }

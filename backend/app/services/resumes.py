@@ -40,6 +40,7 @@ from app.models.job import (
 from app.models.resume import (
     PIPELINE_INTERVIEWING,
     PIPELINE_PENDING_HR_SCREEN,
+    PIPELINE_PENDING_OFFER,
     PIPELINE_PENDING_PARSE,
     PIPELINE_REJECTED,
     PIPELINE_TALENT_POOL,
@@ -1284,8 +1285,14 @@ async def create_screening_decision(
         )
     if application.status != APPLICATION_STATUS_IN_PROGRESS:
         raise ResumeStateError("closed application cannot be screened")
-    if application.pipeline_status in {PIPELINE_REJECTED, PIPELINE_TALENT_POOL}:
-        raise ResumeStateError("terminal application cannot be screened again")
+    if application.pipeline_status in {
+        PIPELINE_REJECTED,
+        PIPELINE_TALENT_POOL,
+        PIPELINE_PENDING_OFFER,
+    }:
+        raise ResumeStateError(
+            "pending_offer or terminal application cannot be screened again"
+        )
     if payload.decision not in _DECISION_TO_PIPELINE:
         raise ResumeValidationError("invalid decision")
     try:

@@ -113,6 +113,7 @@ def _detail_out(*, candidate_id, application_id) -> CandidateCenterDetailOut:
         pipeline_status="interviewing",
         close_action=None,
         interview_started=True,
+        lock_version=3,
         resume_summary=None,
         score_summary=None,
         rounds=[],
@@ -319,6 +320,42 @@ def test_detail_sets_no_store(lifespan_patches) -> None:
     assert response.headers.get("cache-control") == "no-store"
     assert mocked.await_args.kwargs["candidate_id"] == candidate_id
     assert mocked.await_args.kwargs["application_id"] == application_id
+
+
+def test_candidate_center_detail_includes_lock_version(lifespan_patches) -> None:
+    candidate_id = uuid4()
+    application_id = uuid4()
+    mocked = AsyncMock(
+        return_value=_detail_out(
+            candidate_id=candidate_id, application_id=application_id
+        )
+    )
+    client = _client_for(_user("recruitment.manage"))
+    with patch(
+        "app.api.v1.endpoints.candidate_center.get_candidate_center_application_detail",
+        new=mocked,
+    ):
+        response = client.get(
+            f"/api/v1/candidate-center/candidates/{candidate_id}/applications/{application_id}"
+        )
+    assert response.status_code == 200
+    assert isinstance(response.json()["lock_version"], int)
+    assert response.json()["lock_version"] == 3
+
+
+def test_list_accepts_pending_offer_pipeline_status(lifespan_patches) -> None:
+    mocked = AsyncMock(return_value=_list_response())
+    client = _client_for(_user("recruitment.manage"))
+    with patch(
+        "app.api.v1.endpoints.candidate_center.list_candidate_center_applications",
+        new=mocked,
+    ):
+        response = client.get(
+            "/api/v1/candidate-center/applications?pipeline_status=pending_offer"
+        )
+    assert response.status_code == 200
+    mocked.assert_awaited_once()
+    assert mocked.await_args.kwargs["query"].pipeline_status == "pending_offer"
 
 
 def test_router_registers_two_get_routes() -> None:

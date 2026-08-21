@@ -150,6 +150,7 @@ class CandidateCenterDetailOut(BaseModel):
     pipeline_status: str
     close_action: str | None = None
     interview_started: bool
+    lock_version: int
     resume_summary: ResumeSummaryOut | None = None
     score_summary: ScoreSummaryOut | None = None
     rounds: list[CandidateCenterRoundOut] = Field(default_factory=list)

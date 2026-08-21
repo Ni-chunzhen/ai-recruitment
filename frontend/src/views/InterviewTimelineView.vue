@@ -39,9 +39,11 @@ const pipelineLabels: Record<string, string> = {
   interviewing: '面试中',
   pending_hr_screen: '待HR筛选',
   pending_parse: '待解析',
+  pending_offer: '录用建议待后续',
   rejected: '已淘汰',
   talent_pool: '人才库',
 }
+const PIPELINE_PENDING_OFFER_NEUTRAL = '流程进行中'
 const statusLabels: Record<string, string> = {
   DRAFT: '草稿',
   SCHEDULED: '已安排',
@@ -58,6 +60,13 @@ const router = useRouter()
 const authStore = useAuthStore()
 const applicationId = computed(() => route.params.applicationId as string)
 const canManage = computed(() => authStore.hasPermission('recruitment.manage'))
+
+function pipelineStatusText(status: string) {
+  if (status === 'pending_offer' && !canManage.value) {
+    return PIPELINE_PENDING_OFFER_NEUTRAL
+  }
+  return pipelineLabels[status] || status
+}
 
 const loading = ref(false)
 const saving = ref(false)
@@ -741,9 +750,9 @@ onMounted(() => {
               <span class="meta-chip">候选人 <strong>{{ timeline.candidate_name }}</strong></span>
               <span class="meta-chip">岗位 <strong>{{ timeline.job_name || '—' }}</strong></span>
               <span class="meta-chip">岗位版本 <strong>{{ timeline.job_version_label || '—' }}</strong></span>
-              <span class="meta-chip">
+              <span class="meta-chip" data-test="timeline-pipeline-status">
                 应聘状态
-                <strong>{{ pipelineLabels[timeline.pipeline_status] || timeline.pipeline_status }}</strong>
+                <strong>{{ pipelineStatusText(timeline.pipeline_status) }}</strong>
               </span>
               <span class="meta-chip">
                 轮次

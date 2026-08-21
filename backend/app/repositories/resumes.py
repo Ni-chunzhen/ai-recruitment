@@ -190,6 +190,18 @@ async def get_application_by_id(
     return result.scalar_one_or_none()
 
 
+async def get_application_by_id_for_update(
+    session: AsyncSession, application_id: UUID
+) -> JobApplication | None:
+    result = await session.execute(
+        select(JobApplication)
+        .where(JobApplication.id == application_id)
+        .options(selectinload(JobApplication.candidate))
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
 async def find_open_application(
     session: AsyncSession,
     *,

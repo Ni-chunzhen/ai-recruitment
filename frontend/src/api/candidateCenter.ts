@@ -115,6 +115,7 @@ export interface CandidateCenterDetail {
   pipeline_status: string
   close_action?: string | null
   interview_started: boolean
+  lock_version: number
   resume_summary?: ResumeSummary | null
   score_summary?: ScoreSummary | null
   rounds: CandidateCenterRound[]

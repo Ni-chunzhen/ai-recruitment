@@ -118,12 +118,15 @@ def test_013_migration_file_exists() -> None:
     assert MIGRATION_FILE.exists()
 
 
-def test_revision_013_is_head_and_revises_012() -> None:
+def test_revision_013_revises_012_and_is_parent_of_014() -> None:
     script = _script()
-    assert script.get_current_head() == REVISION
-    assert script.get_heads() == [REVISION]
+    assert script.get_current_head() == "014_hiring_decisions"
+    assert script.get_heads() == ["014_hiring_decisions"]
     revision = script.get_revision(REVISION)
     assert revision.down_revision == DOWN_REVISION
+    child = script.get_revision("014_hiring_decisions")
+    assert child is not None
+    assert child.down_revision == REVISION
     assert len(revision.revision) <= 64
     assert len(REVISION) <= 64
 

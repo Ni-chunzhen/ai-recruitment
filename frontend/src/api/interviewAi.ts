@@ -201,6 +201,11 @@ export async function getRoundAnalysis(roundId: string) {
   return data
 }
 
+/** Read-only alias for selecting a current non-stale analysis version. */
+export async function listAnalysisVersions(roundId: string) {
+  return getRoundAnalysis(roundId)
+}
+
 export async function getRoundAnalysisVersion(roundId: string, versionId: string) {
   const { data } = await apiClient.get<InterviewAnalysisVersionDetail>(
     `/interview-rounds/${roundId}/analysis/versions/${versionId}`,

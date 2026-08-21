@@ -45,6 +45,7 @@ VERSION_KINDS = frozenset({VERSION_KIND_FILE, VERSION_KIND_CONFIRMED})
 PIPELINE_PENDING_PARSE = "pending_parse"
 PIPELINE_PENDING_HR_SCREEN = "pending_hr_screen"
 PIPELINE_INTERVIEWING = "interviewing"
+PIPELINE_PENDING_OFFER = "pending_offer"
 PIPELINE_REJECTED = "rejected"
 PIPELINE_TALENT_POOL = "talent_pool"
 PIPELINE_STATUSES = frozenset(
@@ -52,6 +53,7 @@ PIPELINE_STATUSES = frozenset(
         PIPELINE_PENDING_PARSE,
         PIPELINE_PENDING_HR_SCREEN,
         PIPELINE_INTERVIEWING,
+        PIPELINE_PENDING_OFFER,
         PIPELINE_REJECTED,
         PIPELINE_TALENT_POOL,
     }
@@ -105,6 +107,93 @@ SCREENING_REASON_CATALOG: tuple[tuple[str, str], ...] = (
 )
 
 
+HIRING_RECOMMEND_HIRE = "recommend_hire"
+HIRING_REJECT = "reject"
+HIRING_HOLD = "hold"
+HIRING_DECISIONS = frozenset(
+    {
+        HIRING_RECOMMEND_HIRE,
+        HIRING_REJECT,
+        HIRING_HOLD,
+    }
+)
+
+HIRING_REASON_MEETS_ROLE_BAR = "meets_role_bar"
+HIRING_REASON_STRONG_ROUND_EVIDENCE = "strong_round_evidence"
+HIRING_REASON_HIRE_OTHER = "hire_other"
+HIRING_REASON_SKILL_GAP = "skill_gap"
+HIRING_REASON_EXPERIENCE_INSUFFICIENT = "experience_insufficient"
+HIRING_REASON_COMMUNICATION_INSUFFICIENT = "communication_insufficient"
+HIRING_REASON_INCOMPLETE_OR_WEAK_EVIDENCE = "incomplete_or_weak_evidence"
+HIRING_REASON_REJECT_OTHER = "reject_other"
+HIRING_REASON_NEED_ANOTHER_ROUND = "need_another_round"
+HIRING_REASON_NEED_MORE_EVIDENCE = "need_more_evidence"
+HIRING_REASON_AWAITING_STAKEHOLDER = "awaiting_stakeholder"
+HIRING_REASON_HOLD_OTHER = "hold_other"
+HIRING_REASON_CODES = frozenset(
+    {
+        HIRING_REASON_MEETS_ROLE_BAR,
+        HIRING_REASON_STRONG_ROUND_EVIDENCE,
+        HIRING_REASON_HIRE_OTHER,
+        HIRING_REASON_SKILL_GAP,
+        HIRING_REASON_EXPERIENCE_INSUFFICIENT,
+        HIRING_REASON_COMMUNICATION_INSUFFICIENT,
+        HIRING_REASON_INCOMPLETE_OR_WEAK_EVIDENCE,
+        HIRING_REASON_REJECT_OTHER,
+        HIRING_REASON_NEED_ANOTHER_ROUND,
+        HIRING_REASON_NEED_MORE_EVIDENCE,
+        HIRING_REASON_AWAITING_STAKEHOLDER,
+        HIRING_REASON_HOLD_OTHER,
+    }
+)
+HIRING_REASON_CATALOG: tuple[tuple[str, str, frozenset[str]], ...] = (
+    (
+        HIRING_REASON_MEETS_ROLE_BAR,
+        "达到岗位录用标准",
+        frozenset({HIRING_RECOMMEND_HIRE}),
+    ),
+    (
+        HIRING_REASON_STRONG_ROUND_EVIDENCE,
+        "本轮证据充分且表现突出",
+        frozenset({HIRING_RECOMMEND_HIRE}),
+    ),
+    (
+        HIRING_REASON_HIRE_OTHER,
+        "其他录用理由（仅码，无补充正文）",
+        frozenset({HIRING_RECOMMEND_HIRE}),
+    ),
+    (HIRING_REASON_SKILL_GAP, "关键技能不足", frozenset({HIRING_REJECT})),
+    (
+        HIRING_REASON_EXPERIENCE_INSUFFICIENT,
+        "相关经验不足",
+        frozenset({HIRING_REJECT}),
+    ),
+    (
+        HIRING_REASON_COMMUNICATION_INSUFFICIENT,
+        "沟通表达未达标",
+        frozenset({HIRING_REJECT}),
+    ),
+    (
+        HIRING_REASON_INCOMPLETE_OR_WEAK_EVIDENCE,
+        "证据不足或风险不可接受",
+        frozenset({HIRING_REJECT}),
+    ),
+    (HIRING_REASON_REJECT_OTHER, "其他淘汰理由（仅码）", frozenset({HIRING_REJECT})),
+    (HIRING_REASON_NEED_ANOTHER_ROUND, "需要安排补面", frozenset({HIRING_HOLD})),
+    (
+        HIRING_REASON_NEED_MORE_EVIDENCE,
+        "需要补充转写/分析证据",
+        frozenset({HIRING_HOLD}),
+    ),
+    (
+        HIRING_REASON_AWAITING_STAKEHOLDER,
+        "待内部干系人确认",
+        frozenset({HIRING_HOLD}),
+    ),
+    (HIRING_REASON_HOLD_OTHER, "其他暂缓理由（仅码）", frozenset({HIRING_HOLD})),
+)
+
+
 def list_screening_reason_catalog() -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
     for code, label in SCREENING_REASON_CATALOG:
@@ -114,6 +203,19 @@ def list_screening_reason_catalog() -> list[dict[str, object]]:
                 "label": label,
                 "allowed_decisions": [SCREENING_REJECT, SCREENING_TALENT_POOL],
                 "requires_description": code == SCREENING_REASON_OTHER,
+            }
+        )
+    return items
+
+
+def list_hiring_reason_catalog() -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for code, label, allowed in HIRING_REASON_CATALOG:
+        items.append(
+            {
+                "code": code,
+                "label": label,
+                "allowed_decisions": sorted(allowed),
             }
         )
     return items
@@ -314,6 +416,62 @@ class ScreeningDecision(Base):
     ai_result_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("ai_results.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class HiringDecision(Base):
+    """Immutable post-interview hiring decision history (append-only)."""
+
+    __tablename__ = "hiring_decisions"
+    __table_args__ = (
+        Index(
+            "uq_hiring_decisions_idempotency",
+            "application_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("ix_hiring_decisions_application_id", "application_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    application_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("job_applications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    round_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_rounds.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    analysis_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("interview_round_analysis_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    analysis_version_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    transcript_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
+    job_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True
+    )
+    from_pipeline_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_pipeline_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)

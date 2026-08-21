@@ -40,7 +40,7 @@ const globalStubs = {
     props: ['modelValue'],
     emits: ['update:modelValue'],
     template:
-      '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><slot /></select>',
+      '<select :data-test="$attrs[\'data-test\']" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><slot /></select>',
   },
   'el-option': {
     props: ['label', 'value'],
@@ -242,8 +242,15 @@ describe('CandidateCenter list menu, route and view', () => {
     expect(text).not.toContain('记发送')
     expect(text).not.toContain('出题')
     expect(text).not.toContain('开始面试')
-    expect(text).not.toContain('淘汰')
-    expect(text).not.toContain('录用')
-    expect(text).not.toContain('Offer')
+    expect(text).not.toContain('发送 Offer')
+    expect(text).not.toContain('自动决策')
+    expect(text).not.toContain('Dify')
+    expect(text).not.toContain('SMTP')
+  })
+
+  it('list filter includes pending_offer label', async () => {
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="pipeline-status-filter"]').exists()).toBe(true))
+    expect(wrapper.text()).toContain('录用建议待后续')
   })
 })

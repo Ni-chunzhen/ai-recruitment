@@ -8,24 +8,127 @@ import {
   type CandidateCenterDetail,
   type CandidateCenterRound,
 } from '../api/candidateCenter'
+import {
+  createHiringDecision,
+  listHiringDecisions,
+  listHiringReasonCodes,
+  type HiringDecisionOut,
+  type HiringDecisionType,
+  type HiringReasonCodeItem,
+} from '../api/hiringDecisions'
+import { getRoundAnalysis } from '../api/interviewAi'
 import AdminLayout from '../layouts/AdminLayout.vue'
 import { pipelineStatusLabel, type PipelineStatus } from '../api/resumes'
+import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 
 const loading = ref(false)
 const loadFailed = ref(false)
 const detail = ref<CandidateCenterDetail | null>(null)
+const history = ref<HiringDecisionOut[]>([])
+const reasonCatalog = ref<HiringReasonCodeItem[]>([])
+const validAnalysisVersionId = ref<string | null>(null)
+const analysisLoadError = ref('')
+
+const dialogVisible = ref(false)
+const pendingDecision = ref<HiringDecisionType | null>(null)
+const selectedReasonCode = ref('')
+const submitting = ref(false)
 
 const candidateId = computed(() => route.params.candidateId as string)
 const applicationId = computed(() => route.params.applicationId as string)
 const hasCurrentDetail = computed(
-  () => detail.value?.application_id === applicationId.value && detail.value?.candidate_id === candidateId.value,
+  () =>
+    detail.value?.application_id === applicationId.value &&
+    detail.value?.candidate_id === candidateId.value,
 )
+
+const canManage = computed(() => authStore.hasPermission('recruitment.manage'))
+const canWriteHiring = computed(
+  () =>
+    canManage.value &&
+    detail.value?.pipeline_status === 'interviewing' &&
+    detail.value?.status === 'in_progress',
+)
+const hasValidAnalysis = computed(() => Boolean(validAnalysisVersionId.value))
+const writeDisabled = computed(() => !hasValidAnalysis.value)
+const disabledReason = computed(() => {
+  if (!canWriteHiring.value) return ''
+  if (analysisLoadError.value) return analysisLoadError.value
+  if (!hasValidAnalysis.value) return '无当前有效且非过期的单轮分析版本，无法决策'
+  return ''
+})
+
+const decisionLabel: Record<HiringDecisionType, string> = {
+  recommend_hire: '录用建议',
+  reject: '淘汰',
+  hold: '待定',
+}
+
+const reasonOptions = computed(() => {
+  if (!pendingDecision.value) return []
+  return reasonCatalog.value.filter((item) =>
+    item.allowed_decisions.includes(pendingDecision.value as string),
+  )
+})
 
 function pipelineText(status: string) {
   return pipelineStatusLabel[status as PipelineStatus] || status
+}
+
+function newIdempotencyKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `hd-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+async function resolveValidAnalysis(rounds: CandidateCenterRound[]) {
+  validAnalysisVersionId.value = null
+  analysisLoadError.value = ''
+  for (const round of rounds) {
+    try {
+      const set = await getRoundAnalysis(round.round_id)
+      const current = set.versions.find((item) => item.is_current && !item.is_stale)
+      if (current) {
+        validAnalysisVersionId.value = current.version_id
+        return
+      }
+    } catch {
+      // try next round
+    }
+  }
+  if (rounds.length) {
+    analysisLoadError.value = '无当前有效且非过期的单轮分析版本，无法决策'
+  } else {
+    analysisLoadError.value = '暂无面试轮次，无法选择分析版本'
+  }
+}
+
+async function loadHistory() {
+  if (!canManage.value) {
+    history.value = []
+    return
+  }
+  try {
+    const data = await listHiringDecisions(applicationId.value)
+    history.value = data.items
+  } catch {
+    history.value = []
+  }
+}
+
+async function loadReasonCatalog() {
+  if (!canManage.value) return
+  try {
+    const data = await listHiringReasonCodes()
+    reasonCatalog.value = data.items
+  } catch {
+    reasonCatalog.value = []
+  }
 }
 
 async function loadDetail() {
@@ -33,12 +136,69 @@ async function loadDetail() {
   loadFailed.value = false
   detail.value = null
   try {
-    detail.value = await getCandidateCenterApplicationDetail(candidateId.value, applicationId.value)
+    detail.value = await getCandidateCenterApplicationDetail(
+      candidateId.value,
+      applicationId.value,
+    )
+    if (canManage.value) {
+      await Promise.all([
+        loadHistory(),
+        loadReasonCatalog(),
+        resolveValidAnalysis(detail.value.rounds || []),
+      ])
+    }
   } catch {
     loadFailed.value = true
     ElMessage.error('加载详情失败')
   } finally {
     loading.value = false
+  }
+}
+
+function openDecisionDialog(decision: HiringDecisionType) {
+  if (!canWriteHiring.value || writeDisabled.value) return
+  pendingDecision.value = decision
+  selectedReasonCode.value = ''
+  dialogVisible.value = true
+}
+
+async function submitDecision() {
+  if (!detail.value || !pendingDecision.value || !validAnalysisVersionId.value) return
+  if (!selectedReasonCode.value) {
+    ElMessage.warning('请选择固定原因码')
+    return
+  }
+  submitting.value = true
+  try {
+    const out = await createHiringDecision(detail.value.application_id, {
+      decision: pendingDecision.value,
+      reason_code: selectedReasonCode.value,
+      analysis_version_id: validAnalysisVersionId.value,
+      lock_version: detail.value.lock_version,
+      idempotency_key: newIdempotencyKey(),
+    })
+    dialogVisible.value = false
+    ElMessage.success('决策已保存')
+    detail.value = {
+      ...detail.value,
+      lock_version: out.lock_version,
+      pipeline_status: out.to_pipeline_status,
+      status:
+        out.decision === 'reject' ? 'rejected' : detail.value.status,
+    }
+    await loadDetail()
+  } catch (err: unknown) {
+    const status = (err as { response?: { status?: number } })?.response?.status
+    if (status === 403) {
+      ElMessage.error('无权限执行面后决策')
+    } else if (status === 409) {
+      ElMessage.error('状态冲突，请刷新后重试')
+      await loadDetail()
+    } else {
+      ElMessage.error('提交决策失败')
+    }
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -122,6 +282,74 @@ onMounted(() => {
           <p>{{ detail.name }} · {{ detail.phone || '—' }} · {{ detail.email || '—' }}</p>
           <p>{{ detail.job_name }}（{{ detail.job_code }}）</p>
           <p>应聘状态：{{ detail.status }} · 流程状态：{{ pipelineText(detail.pipeline_status) }}</p>
+        </section>
+
+        <section v-if="canManage" class="panel" data-test="hiring-decision-panel">
+          <h2>面后人工决策</h2>
+          <p v-if="detail.pipeline_status === 'pending_offer'" class="hint">
+            当前为录用建议待后续，不提供发送能力。
+          </p>
+          <div v-if="canWriteHiring" class="hiring-actions">
+            <el-button
+              data-test="hiring-recommend-hire"
+              type="primary"
+              plain
+              :disabled="writeDisabled"
+              @click="openDecisionDialog('recommend_hire')"
+            >
+              录用建议
+            </el-button>
+            <el-button
+              data-test="hiring-reject"
+              type="danger"
+              plain
+              :disabled="writeDisabled"
+              @click="openDecisionDialog('reject')"
+            >
+              淘汰
+            </el-button>
+            <el-button
+              data-test="hiring-hold"
+              plain
+              :disabled="writeDisabled"
+              @click="openDecisionDialog('hold')"
+            >
+              待定
+            </el-button>
+          </div>
+          <p
+            v-if="canWriteHiring && disabledReason"
+            data-test="hiring-disabled-reason"
+            class="hint warn"
+          >
+            {{ disabledReason }}
+          </p>
+
+          <el-table
+            data-test="hiring-decision-history"
+            :data="history"
+            stripe
+            style="margin-top: 12px"
+          >
+            <el-table-column label="时间" min-width="160">
+              <template #default="{ row }">{{ row.created_at }}</template>
+            </el-table-column>
+            <el-table-column label="决策" width="120">
+              <template #default="{ row }">
+                {{ decisionLabel[row.decision as HiringDecisionType] || row.decision }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="reason_code" label="原因码" min-width="160" />
+            <el-table-column label="分数" width="90">
+              <template #default="{ row }">{{ row.overall_score ?? '—' }}</template>
+            </el-table-column>
+            <el-table-column label="流水" min-width="180">
+              <template #default="{ row }">
+                {{ pipelineText(row.from_pipeline_status) }} →
+                {{ pipelineText(row.to_pipeline_status) }}
+              </template>
+            </el-table-column>
+          </el-table>
         </section>
 
         <section class="panel">
@@ -228,6 +456,45 @@ onMounted(() => {
             </el-button>
           </div>
         </section>
+
+        <el-dialog
+          v-model="dialogVisible"
+          data-test="hiring-decision-dialog"
+          :title="pendingDecision ? decisionLabel[pendingDecision] : '面后人工决策'"
+          width="480px"
+        >
+          <el-form label-width="100px">
+            <el-form-item label="原因码">
+              <el-select
+                v-model="selectedReasonCode"
+                data-test="hiring-reason-select"
+                placeholder="选择固定原因码"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="item in reasonOptions"
+                  :key="item.code"
+                  :label="item.label"
+                  :value="item.code"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="分析版本">
+              <span data-test="hiring-analysis-version">{{ validAnalysisVersionId || '—' }}</span>
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="dialogVisible = false">取消</el-button>
+            <el-button
+              data-test="hiring-submit"
+              type="primary"
+              :loading="submitting"
+              @click="submitDecision"
+            >
+              确认
+            </el-button>
+          </template>
+        </el-dialog>
       </template>
     </div>
   </AdminLayout>
@@ -266,5 +533,18 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+.hiring-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.hint {
+  color: var(--text-secondary, #666);
+  font-size: 13px;
+}
+.hint.warn {
+  color: #b45309;
 }
 </style>

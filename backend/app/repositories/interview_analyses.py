@@ -70,6 +70,24 @@ async def get_analysis_version_by_id(
     )
 
 
+async def get_analysis_version_by_pk(
+    session: AsyncSession, *, version_id: UUID
+) -> InterviewRoundAnalysisVersion | None:
+    return await session.scalar(
+        select(InterviewRoundAnalysisVersion).where(
+            InterviewRoundAnalysisVersion.id == version_id
+        )
+    )
+
+
+async def get_analysis_by_id(
+    session: AsyncSession, *, analysis_id: UUID
+) -> InterviewRoundAnalysis | None:
+    return await session.scalar(
+        select(InterviewRoundAnalysis).where(InterviewRoundAnalysis.id == analysis_id)
+    )
+
+
 async def get_analysis_version_by_task_id(
     session: AsyncSession,
     *,

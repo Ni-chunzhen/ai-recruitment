@@ -28,6 +28,16 @@ const filter = reactive({
 
 const assignedFilter = computed(() => (filter.assigned ? 'assigned' : 'all'))
 
+const pipelineFilterOptions: Array<{ value: string; label: string }> = [
+  { value: '', label: '全部流程' },
+  { value: 'pending_parse', label: pipelineStatusLabel.pending_parse },
+  { value: 'pending_hr_screen', label: pipelineStatusLabel.pending_hr_screen },
+  { value: 'interviewing', label: pipelineStatusLabel.interviewing },
+  { value: 'pending_offer', label: pipelineStatusLabel.pending_offer },
+  { value: 'rejected', label: pipelineStatusLabel.rejected },
+  { value: 'talent_pool', label: pipelineStatusLabel.talent_pool },
+]
+
 function buildQuery(): CandidateCenterListQuery {
   return {
     assigned: filter.assigned,
@@ -130,13 +140,20 @@ onMounted(() => {
           style="width: 140px"
           @keyup.enter="onSearch"
         />
-        <el-input
+        <el-select
           v-model="filter.pipeline_status"
           clearable
           placeholder="流程状态"
-          style="width: 140px"
-          @keyup.enter="onSearch"
-        />
+          data-test="pipeline-status-filter"
+          style="width: 180px"
+        >
+          <el-option
+            v-for="opt in pipelineFilterOptions"
+            :key="opt.value || 'all'"
+            :label="opt.label"
+            :value="opt.value"
+          />
+        </el-select>
         <el-button type="primary" plain @click="onSearch">查询</el-button>
       </div>
 

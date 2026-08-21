@@ -337,6 +337,7 @@ async def get_candidate_center_application_detail(
         pipeline_status=application.pipeline_status,
         close_action=application.close_action,
         interview_started=application.interview_started,
+        lock_version=application.lock_version,
         resume_summary=resume_summary,
         score_summary=score_summary,
         rounds=round_outs,

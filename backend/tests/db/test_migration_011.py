@@ -19,8 +19,9 @@ def test_011_revises_010() -> None:
     revision = script.get_revision("011_stage7_invitation_confirmation_summary")
     assert revision.down_revision == "010_stage7_manual_invitations"
     assert script.get_revision("011_stage7_invitation_confirmation_summary") is not None
-    # 013 is the current head; 011 remains in the linear chain.
-    assert "013_stage8_interview_ai_foundation" in script.get_heads()
+    # 014 is the current head; 011 remains in the linear chain.
+    assert "014_hiring_decisions" in script.get_heads()
+    assert script.get_revision("013_stage8_interview_ai_foundation") is not None
 
 
 def test_010_does_not_define_confirmation_summary() -> None:

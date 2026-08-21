@@ -438,13 +438,20 @@ def _hash_input_snapshot(
     )
 
 
-def _is_stale(
+def is_analysis_version_stale(
     version: InterviewRoundAnalysisVersion,
     transcript: InterviewTranscript | None,
 ) -> bool:
     if transcript is None or transcript.current_confirmed_version_id is None:
         return True
     return version.transcript_version_id != transcript.current_confirmed_version_id
+
+
+def _is_stale(
+    version: InterviewRoundAnalysisVersion,
+    transcript: InterviewTranscript | None,
+) -> bool:
+    return is_analysis_version_stale(version, transcript)
 
 
 def _evidence_count(version: InterviewRoundAnalysisVersion) -> int:

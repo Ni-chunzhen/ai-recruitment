@@ -1349,7 +1349,8 @@ def test_013_revision_is_registered() -> None:
     revision = script.get_revision(REVISION)
     assert revision is not None
     assert revision.down_revision == DOWN_REVISION
-    assert script.get_current_head() == REVISION
+    assert script.get_current_head() == "014_hiring_decisions"
+    assert script.get_revision("014_hiring_decisions").down_revision == REVISION
 
 
 def test_012_to_013_roundtrip_and_constraints(monkeypatch: pytest.MonkeyPatch) -> None:

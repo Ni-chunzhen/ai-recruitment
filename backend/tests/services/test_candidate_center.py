@@ -91,6 +91,7 @@ def _application(**overrides) -> SimpleNamespace:
         resume_version_id=None,
         close_action=None,
         interview_started=True,
+        lock_version=1,
         created_at=_now(),
         updated_at=_now(),
     )

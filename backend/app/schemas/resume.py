@@ -18,6 +18,7 @@ PipelineStatus = Literal[
     "pending_parse",
     "pending_hr_screen",
     "interviewing",
+    "pending_offer",
     "rejected",
     "talent_pool",
 ]

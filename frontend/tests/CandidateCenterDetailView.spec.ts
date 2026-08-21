@@ -5,6 +5,8 @@ import { nextTick } from 'vue'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
 import * as candidateCenterApi from '../src/api/candidateCenter'
+import * as hiringDecisionsApi from '../src/api/hiringDecisions'
+import * as interviewAiApi from '../src/api/interviewAi'
 import * as resumesApi from '../src/api/resumes'
 import { useAuthStore } from '../src/stores/auth'
 
@@ -23,10 +25,10 @@ vi.mock('element-plus', async () => {
 
 const globalStubs = {
   'el-button': {
-    props: ['type', 'plain', 'link', 'size'],
+    props: ['type', 'plain', 'link', 'size', 'disabled'],
     emits: ['click'],
     template:
-      '<button :data-test="$attrs[\'data-test\']" @click="$emit(\'click\')"><slot /></button>',
+      '<button :data-test="$attrs[\'data-test\']" :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
   },
   'el-tag': { template: '<span><slot /></span>' },
   'el-table': {
@@ -41,6 +43,23 @@ const globalStubs = {
   'el-descriptions-item': { template: '<div><slot /></div>' },
   'el-alert': { props: ['title'], template: '<div class="alert">{{ title }}</div>' },
   'el-empty': { props: ['description'], template: '<div class="empty">{{ description }}</div>' },
+  'el-dialog': {
+    props: ['modelValue', 'title'],
+    template:
+      '<div v-if="modelValue" class="dialog" :data-test="$attrs[\'data-test\']"><slot /><slot name="footer" /></div>',
+  },
+  'el-select': {
+    props: ['modelValue', 'disabled', 'placeholder'],
+    emits: ['update:modelValue'],
+    template:
+      '<select :data-test="$attrs[\'data-test\']" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><slot /></select>',
+  },
+  'el-option': {
+    props: ['label', 'value'],
+    template: '<option :value="value">{{ label }}</option>',
+  },
+  'el-form': { template: '<form><slot /></form>' },
+  'el-form-item': { props: ['label'], template: '<div><label>{{ label }}</label><slot /></div>' },
 }
 
 function makeUser() {
@@ -89,7 +108,7 @@ function makeRouter(): Router {
   })
 }
 
-function makeDetail() {
+function makeDetail(overrides: Record<string, unknown> = {}) {
   return {
     application_id: 'app-1',
     candidate_id: 'cand-1',
@@ -105,6 +124,7 @@ function makeDetail() {
     pipeline_status: 'interviewing',
     close_action: null,
     interview_started: true,
+    lock_version: 3,
     resume_summary: {
       resume_id: 'resume-1',
       resume_version_id: 'resume-ver-1',
@@ -154,10 +174,11 @@ function makeDetail() {
         created_at: '2026-08-17T00:00:00Z',
       },
     ],
+    ...overrides,
   }
 }
 
-async function mountView() {
+async function mountView(permissions: string[] = ['recruitment.manage', 'profile.read']) {
   const { default: CandidateCenterDetailView } = await import(
     '../src/views/CandidateCenterDetailView.vue'
   )
@@ -165,7 +186,11 @@ async function mountView() {
   setActivePinia(pinia)
   const authStore = useAuthStore()
   authStore.initialized = true
-  authStore.user = makeUser()
+  authStore.user = {
+    ...makeUser(),
+    permissions,
+    roles: permissions.includes('recruitment.manage') ? ['recruiter_admin'] : ['interviewer'],
+  }
   const router = makeRouter()
   await router.push('/candidate-center/candidates/cand-1/applications/app-1')
   await router.isReady()
@@ -184,7 +209,52 @@ async function mountView() {
 describe('CandidateCenterDetailView', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
-    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(makeDetail())
+    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(
+      makeDetail() as never,
+    )
+    vi.spyOn(hiringDecisionsApi, 'listHiringDecisions').mockResolvedValue({ items: [] })
+    vi.spyOn(hiringDecisionsApi, 'listHiringReasonCodes').mockResolvedValue({
+      items: [
+        {
+          code: 'meets_role_bar',
+          label: '达到岗位录用标准',
+          allowed_decisions: ['recommend_hire'],
+        },
+        {
+          code: 'skill_gap',
+          label: '关键技能不足',
+          allowed_decisions: ['reject'],
+        },
+        {
+          code: 'need_another_round',
+          label: '需要安排补面',
+          allowed_decisions: ['hold'],
+        },
+      ],
+    })
+    vi.spyOn(interviewAiApi, 'getRoundAnalysis').mockResolvedValue({
+      analysis_id: 'an-1',
+      round_id: 'round-1',
+      current_version_id: 'ver-a1',
+      versions: [
+        {
+          analysis_id: 'an-1',
+          version_id: 'ver-a1',
+          version_no: 1,
+          version_label: 'A1',
+          transcript_version_id: 'tv-1',
+          job_version_id: 'jv-1',
+          ai_task_id: 'task-1',
+          overall_score: 4.2,
+          dimension_count: 2,
+          evidence_count: 2,
+          created_by: null,
+          created_at: '2026-08-20T00:00:00Z',
+          is_current: true,
+          is_stale: false,
+        },
+      ],
+    })
   })
 
   it('calls detail client with candidateId and applicationId from route', async () => {
@@ -270,16 +340,124 @@ describe('CandidateCenterDetailView', () => {
     expect(text).not.toContain('出题')
     expect(text).not.toContain('开始面试')
     expect(text).not.toContain('结束面试')
-    expect(text).not.toContain('淘汰')
-    expect(text).not.toContain('录用')
-    expect(text).not.toContain('Offer')
     expect(text).not.toContain('筛选决策')
+    expect(text).not.toContain('发送 Offer')
+    expect(text).not.toContain('自动决策')
+    expect(text).not.toContain('Dify')
+    expect(text).not.toContain('SMTP')
+  })
+
+  it('shows hiring panel for interviewing manage user', async () => {
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="hiring-decision-panel"]').exists()).toBe(true))
+    expect(wrapper.text()).toContain('面后人工决策')
+    expect(wrapper.find('[data-test="hiring-recommend-hire"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hiring-reject"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hiring-hold"]').exists()).toBe(true)
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hiring-decision-history"]').exists()).toBe(true)
+  })
+
+  it('hides write actions when pending_offer', async () => {
+    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(
+      makeDetail({ pipeline_status: 'pending_offer' }) as never,
+    )
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('录用建议待后续'))
+    expect(wrapper.find('[data-test="hiring-recommend-hire"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hiring-reject"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hiring-hold"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hiring-decision-history"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('发送 Offer')
+  })
+
+  it('hides hiring panel for execute-only user', async () => {
+    const { wrapper } = await mountView(['interview.execute', 'profile.read'])
+    await vi.waitFor(() => expect(wrapper.text()).toContain('张三'))
+    expect(wrapper.find('[data-test="hiring-decision-panel"]').exists()).toBe(false)
+  })
+
+  it('submits recommend_hire with reason_code and analysis_version_id', async () => {
+    const createSpy = vi.spyOn(hiringDecisionsApi, 'createHiringDecision').mockResolvedValue({
+      id: 'hd-1',
+      application_id: 'app-1',
+      decision: 'recommend_hire',
+      reason_code: 'meets_role_bar',
+      round_id: 'round-1',
+      analysis_version_id: 'ver-a1',
+      overall_score: 4.2,
+      analysis_version_no: 1,
+      from_pipeline_status: 'interviewing',
+      to_pipeline_status: 'pending_offer',
+      lock_version: 4,
+      created_at: '2026-08-20T00:00:00Z',
+      decided_by: 'u1',
+    })
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="hiring-recommend-hire"]').exists()).toBe(true))
+    await wrapper.find('[data-test="hiring-recommend-hire"]').trigger('click')
+    await nextTick()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="hiring-decision-dialog"]').exists()).toBe(true))
+    const reasonSelect = wrapper.find('[data-test="hiring-reason-select"]')
+    await reasonSelect.setValue('meets_role_bar')
+    await wrapper.find('[data-test="hiring-submit"]').trigger('click')
+    await vi.waitFor(() => expect(createSpy).toHaveBeenCalled())
+    const [, body] = createSpy.mock.calls[0]
+    expect(body.decision).toBe('recommend_hire')
+    expect(body.reason_code).toBe('meets_role_bar')
+    expect(body.analysis_version_id).toBe('ver-a1')
+    expect(body.lock_version).toBe(3)
+    expect(body.idempotency_key).toBeTruthy()
+    expect(body).not.toHaveProperty('reason')
+    expect(candidateCenterApi.getCandidateCenterApplicationDetail).toHaveBeenCalled()
+  })
+
+  it('forbids offer-send and automation copy', async () => {
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="hiring-decision-panel"]').exists()).toBe(true))
+    const text = wrapper.text()
+    expect(text).toContain('面后人工决策')
+    expect(text).toContain('录用建议')
+    expect(text).not.toContain('发送 Offer')
+    expect(text).not.toContain('自动决策')
+    expect(text).not.toContain('Dify')
+    expect(text).not.toContain('SMTP')
+    expect(text).not.toContain('hired')
+    expect(text).not.toContain('通知')
+  })
+
+  it('disables write when no valid analysis and shows reason', async () => {
+    vi.spyOn(interviewAiApi, 'getRoundAnalysis').mockResolvedValue({
+      analysis_id: 'an-1',
+      round_id: 'round-1',
+      current_version_id: 'ver-old',
+      versions: [
+        {
+          analysis_id: 'an-1',
+          version_id: 'ver-old',
+          version_no: 1,
+          version_label: 'A1',
+          transcript_version_id: 'tv-1',
+          job_version_id: 'jv-1',
+          ai_task_id: 'task-1',
+          overall_score: 3,
+          dimension_count: 1,
+          evidence_count: 0,
+          created_by: null,
+          created_at: '2026-08-20T00:00:00Z',
+          is_current: true,
+          is_stale: true,
+        },
+      ],
+    })
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="hiring-disabled-reason"]').exists()).toBe(true))
+    expect(wrapper.find('[data-test="hiring-recommend-hire"]').attributes('disabled')).toBeDefined()
   })
 
   it('shows no-score state when score_summary is null', async () => {
-    const noScore = makeDetail()
-    noScore.score_summary = null
-    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(noScore)
+    const noScore = makeDetail({ score_summary: null })
+    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(noScore as never)
     const { wrapper } = await mountView()
     await vi.waitFor(() => expect(wrapper.text()).toContain('无评分'))
     expect(wrapper.text()).not.toContain('已完成')
