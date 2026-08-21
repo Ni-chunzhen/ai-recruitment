@@ -49,8 +49,17 @@ def test_revision_015_in_chain_before_016() -> None:
     assert script.get_revision(REVISION) is not None
     assert script.get_revision(REVISION).down_revision == DOWN_REVISION
     head = script.get_current_head()
-    assert head in {REVISION, "016_offer_console_delivery"}
-    if head == "016_offer_console_delivery":
+    assert head in {
+        REVISION,
+        "016_offer_console_delivery",
+        "017_integration_secrets",
+    }
+    if head == "017_integration_secrets":
+        assert (
+            script.get_revision(head).down_revision == "016_offer_console_delivery"
+        )
+        assert script.get_revision("016_offer_console_delivery").down_revision == REVISION
+    elif head == "016_offer_console_delivery":
         assert script.get_revision(head).down_revision == REVISION
     else:
         assert script.get_heads() == [REVISION]

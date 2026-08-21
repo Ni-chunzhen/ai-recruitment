@@ -34,6 +34,11 @@ async def lifespan(app: FastAPI):
     app.state.db_session_factory = session_factory
     app.state.redis = redis_client
 
+    # Process-local integration overlay (env ← enabled DB). No hot reload.
+    from app.services.integration_config import bootstrap_integration_overlay
+
+    await bootstrap_integration_overlay(session_factory=session_factory)
+
     try:
         yield
     finally:

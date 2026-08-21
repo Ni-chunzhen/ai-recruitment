@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_process_init
 
 from app.core.config import get_settings
 
@@ -30,3 +31,11 @@ celery_app.conf.update(
         },
     },
 )
+
+
+@worker_process_init.connect
+def _bootstrap_integration_overlay_on_worker(**_kwargs) -> None:
+    """Load Dify/MinIO DB overlay once per worker process (no hot reload)."""
+    from app.services.integration_config import bootstrap_integration_overlay_sync
+
+    bootstrap_integration_overlay_sync()

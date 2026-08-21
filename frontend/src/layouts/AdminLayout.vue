@@ -10,6 +10,12 @@ const route = useRoute()
 
 const canManageJobs = computed(() => authStore.hasPermission('recruitment.manage'))
 const canReadAudit = computed(() => authStore.hasPermission('audit.read'))
+const canManageIntegrations = computed(() =>
+  authStore.hasPermission('integration.manage'),
+)
+const showSystemNav = computed(
+  () => canReadAudit.value || canManageIntegrations.value,
+)
 
 const mainNavItems = computed(() => {
   const items = [{ name: 'home', label: '首页', path: '/' }]
@@ -46,14 +52,24 @@ async function handleLogout() {
         >
           {{ item.label }}
         </RouterLink>
-        <template v-if="canReadAudit">
+        <template v-if="showSystemNav">
           <div class="nav-group">系统管理</div>
           <RouterLink
+            v-if="canReadAudit"
             to="/system/ai-tasks"
             class="nav-item"
             :class="{ active: isActive('/system/ai-tasks') }"
           >
             AI任务中心
+          </RouterLink>
+          <RouterLink
+            v-if="canManageIntegrations"
+            to="/system/integrations"
+            class="nav-item"
+            data-test="nav-integrations"
+            :class="{ active: isActive('/system/integrations') }"
+          >
+            第三方集成
           </RouterLink>
         </template>
       </nav>

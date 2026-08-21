@@ -71,8 +71,9 @@ async def _run_provider(
     task_type: str,
     input_snapshot: dict,
 ) -> ProviderOutcome:
-    settings = get_settings()
-    provider = (settings.AI_PROVIDER or "mock").strip().lower()
+    from app.services.integration_config import effective_ai_provider
+
+    provider = (effective_ai_provider() or "mock").strip().lower()
     if provider == "dify":
         return await run_dify(task_type=task_type, input_snapshot=input_snapshot)
     return await run_mock(

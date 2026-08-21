@@ -48,8 +48,21 @@ def test_revision_014_in_chain_before_015() -> None:
         REVISION,
         "015_comprehensive_interview_analysis",
         "016_offer_console_delivery",
+        "017_integration_secrets",
     }
-    if head == "016_offer_console_delivery":
+    if head == "017_integration_secrets":
+        assert (
+            script.get_revision(head).down_revision == "016_offer_console_delivery"
+        )
+        assert (
+            script.get_revision("016_offer_console_delivery").down_revision
+            == "015_comprehensive_interview_analysis"
+        )
+        assert (
+            script.get_revision("015_comprehensive_interview_analysis").down_revision
+            == REVISION
+        )
+    elif head == "016_offer_console_delivery":
         assert (
             script.get_revision(head).down_revision
             == "015_comprehensive_interview_analysis"

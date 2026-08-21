@@ -25,6 +25,11 @@ from app.services.ai_providers.base import (
     classify_http_error,
     validate_ai_result,
 )
+from app.services.integration_config import (
+    effective_dify_api_base_url,
+    effective_dify_api_key_for,
+    effective_dify_workflow_id,
+)
 
 INTERVIEW_QUESTION_LIVE_UAT_PREFIX = "UAT-CC-20260818"
 INTERVIEW_QUESTION_LIVE_FICTIONAL_PREFIX = "FICTIONAL-LIVE-20260818"
@@ -105,11 +110,9 @@ def interview_question_live_http_allowed(
             reason="switch_off",
         )
 
-    key = (
-        settings.dify_interview_question_generate_api_key_secret.get_secret_value()
-    ).strip()
-    workflow_id = settings.dify_interview_question_generate_workflow_id.strip()
-    base_url = settings.DIFY_API_BASE_URL.strip()
+    key = effective_dify_api_key_for(TASK_TYPE_INTERVIEW_QUESTION_GENERATE).strip()
+    workflow_id = effective_dify_workflow_id(TASK_TYPE_INTERVIEW_QUESTION_GENERATE)
+    base_url = effective_dify_api_base_url().strip()
     if not key or not workflow_id or not base_url:
         return LiveGateDecision(
             allow_http=False,
@@ -156,34 +159,21 @@ def interview_question_live_http_allowed(
 
 
 def _workflow_id_for(task_type: str) -> str:
-    settings = get_settings()
-    if task_type == TASK_TYPE_JD_PARSE:
-        return settings.DIFY_JD_PARSE_WORKFLOW_ID
-    if task_type == TASK_TYPE_SCORE_DIMENSION_RECOMMEND:
-        return settings.DIFY_SCORE_DIMENSION_WORKFLOW_ID
-    if task_type == TASK_TYPE_RESUME_PARSE:
-        return settings.DIFY_RESUME_PARSE_WORKFLOW_ID
-    if task_type == TASK_TYPE_RESUME_SCORE:
-        return settings.DIFY_RESUME_SCORE_WORKFLOW_ID
-    if task_type == TASK_TYPE_INTERVIEW_QUESTION_GENERATE:
-        return settings.dify_interview_question_generate_workflow_id.strip()
-    return ""
+    return effective_dify_workflow_id(task_type)
 
 
 def _resume_dify_configured(task_type: str) -> bool:
-    settings = get_settings()
-    key = settings.dify_api_key_for(task_type).strip()
+    key = effective_dify_api_key_for(task_type).strip()
     workflow = _workflow_id_for(task_type).strip()
     # workflow id is documentation/marker; API key is required for auth
     if task_type == TASK_TYPE_RESUME_PARSE:
         return bool(
-            settings.dify_resume_parse_api_key_secret.get_secret_value().strip()
+            effective_dify_api_key_for(TASK_TYPE_RESUME_PARSE).strip()
             or (key and workflow)
         )
     if task_type == TASK_TYPE_RESUME_SCORE:
         return bool(
-            settings.dify_resume_score_api_key_secret.get_secret_value().strip()
-            and workflow
+            effective_dify_api_key_for(TASK_TYPE_RESUME_SCORE).strip() and workflow
         )
     return bool(key)
 
@@ -628,9 +618,8 @@ async def _post_workflow(
     input_snapshot: dict[str, Any],
 ) -> ProviderOutcome:
     """Single Dify workflow HTTP call; on success result is raw outputs dict."""
-    settings = get_settings()
-    base_url = settings.DIFY_API_BASE_URL.rstrip("/")
-    api_key = settings.dify_api_key_for(task_type)
+    base_url = effective_dify_api_base_url().rstrip("/")
+    api_key = effective_dify_api_key_for(task_type)
     workflow_id = _workflow_id_for(task_type)
 
     if not base_url or not api_key:
@@ -668,7 +657,7 @@ async def _post_workflow(
         "api_key_suffix": api_key[-6:] if len(api_key) >= 6 else "***",
     }
 
-    timeout = httpx.Timeout(settings.AI_TASK_TIMEOUT_SECONDS)
+    timeout = httpx.Timeout(get_settings().AI_TASK_TIMEOUT_SECONDS)
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(url, headers=headers, json=body)
@@ -1042,8 +1031,8 @@ async def run_dify(
 
             return await run_mock(task_type=task_type, input_snapshot=input_snapshot)
         if task_type == TASK_TYPE_RESUME_SCORE and not (
-            get_settings().dify_resume_score_api_key_secret.get_secret_value().strip()
-            and get_settings().DIFY_RESUME_SCORE_WORKFLOW_ID.strip()
+            effective_dify_api_key_for(TASK_TYPE_RESUME_SCORE).strip()
+            and effective_dify_workflow_id(TASK_TYPE_RESUME_SCORE).strip()
         ):
             return ProviderOutcome(
                 ok=False,

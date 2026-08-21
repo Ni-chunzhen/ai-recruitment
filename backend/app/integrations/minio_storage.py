@@ -9,7 +9,14 @@ from urllib.parse import urlparse
 from minio import Minio
 from minio.error import S3Error
 
-from app.core.config import get_settings
+from app.services.integration_config import (
+    effective_minio_access_key,
+    effective_minio_bucket,
+    effective_minio_endpoint,
+    effective_minio_presign_seconds,
+    effective_minio_secret_key,
+    effective_minio_secure,
+)
 
 
 class StorageError(Exception):
@@ -23,10 +30,13 @@ class StoredObject:
     size: int
 
 
+def effective_bucket_name() -> str:
+    return effective_minio_bucket()
+
+
 @lru_cache
 def get_minio_client() -> Minio:
-    settings = get_settings()
-    endpoint = settings.MINIO_ENDPOINT.strip()
+    endpoint = effective_minio_endpoint()
     # allow http://localhost:9000 or localhost:9000
     if "://" in endpoint:
         parsed = urlparse(endpoint)
@@ -34,19 +44,18 @@ def get_minio_client() -> Minio:
         secure = parsed.scheme == "https"
     else:
         host = endpoint
-        secure = settings.MINIO_SECURE
+        secure = effective_minio_secure()
     return Minio(
         host,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
+        access_key=effective_minio_access_key(),
+        secret_key=effective_minio_secret_key(),
         secure=secure,
     )
 
 
 def ensure_bucket() -> str:
-    settings = get_settings()
     client = get_minio_client()
-    bucket = settings.MINIO_BUCKET
+    bucket = effective_bucket_name()
     try:
         if not client.bucket_exists(bucket):
             client.make_bucket(bucket)
@@ -90,14 +99,19 @@ def get_bytes(key: str) -> bytes:
         raise StorageError(f"minio download failed: {exc}") from exc
 
 
-def presigned_get_url(key: str, *, expires_seconds: int = 600) -> str:
+def presigned_get_url(key: str, *, expires_seconds: int | None = None) -> str:
     bucket = ensure_bucket()
     client = get_minio_client()
+    ttl = (
+        expires_seconds
+        if expires_seconds is not None
+        else effective_minio_presign_seconds()
+    )
     try:
         return client.presigned_get_object(
             bucket,
             key,
-            expires=timedelta(seconds=expires_seconds),
+            expires=timedelta(seconds=ttl),
         )
     except S3Error as exc:
         raise StorageError(f"minio presign failed: {exc}") from exc

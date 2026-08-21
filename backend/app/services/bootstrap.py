@@ -25,6 +25,7 @@ PERMISSION_DEFINITIONS = {
     "profile.change_password": "修改密码",
     "recruitment.manage": "管理招聘",
     "interview.execute": "执行面试",
+    "integration.manage": "管理第三方集成配置",
 }
 
 ROLE_PERMISSION_MATRIX: dict[str, list[str]] = {

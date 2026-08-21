@@ -17,6 +17,7 @@ import InterviewTranscriptView from '../views/InterviewTranscriptView.vue'
 import AiTasksView from '../views/AiTasksView.vue'
 import CandidateCenterListView from '../views/CandidateCenterListView.vue'
 import CandidateCenterDetailView from '../views/CandidateCenterDetailView.vue'
+import SystemIntegrationsView from '../views/SystemIntegrationsView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -128,6 +129,12 @@ const router = createRouter({
       name: 'admin-ai-tasks',
       component: AiTasksView,
       meta: { requiresAuth: true, permission: 'audit.read' },
+    },
+    {
+      path: '/system/integrations',
+      name: 'system-integrations',
+      component: SystemIntegrationsView,
+      meta: { requiresAuth: true, permission: 'integration.manage' },
     },
   ],
 })

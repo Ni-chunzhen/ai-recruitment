@@ -75,8 +75,12 @@ def test_migration_016_revision_chain() -> None:
     revision = script.get_revision(REVISION)
     assert revision is not None
     assert revision.down_revision == DOWN_REVISION
-    assert script.get_current_head() == REVISION
-    assert script.get_heads() == [REVISION]
+    head = script.get_current_head()
+    assert head in {REVISION, "017_integration_secrets"}
+    if head == "017_integration_secrets":
+        assert script.get_revision(head).down_revision == REVISION
+    else:
+        assert script.get_heads() == [REVISION]
     assert len(revision.revision) <= 64
 
 

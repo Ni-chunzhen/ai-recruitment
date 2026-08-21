@@ -68,6 +68,18 @@ from app.models.offer import (  # noqa: F401
     OfferSendAttempt,
     OfferVersion,
 )
+from app.models.integration_secret import (  # noqa: F401
+    DIFY_CONFIG_KEYS,
+    INTEGRATION_PROVIDER_DIFY,
+    INTEGRATION_PROVIDER_MINIO,
+    INTEGRATION_PROVIDERS_STORABLE,
+    MINIO_CONFIG_KEYS,
+    ROOT_SECRET_ENV_NAMES,
+    IntegrationConfigKeyError,
+    IntegrationSecret,
+    is_secret_config_key,
+    validate_integration_config_key,
+)
 from app.models.candidate import (  # noqa: F401
     APPLICATION_STATUS_HIRED,
     APPLICATION_STATUS_IN_PROGRESS,
