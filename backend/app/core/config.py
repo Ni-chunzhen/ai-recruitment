@@ -43,6 +43,10 @@ class Settings(BaseSettings):
         default="ai_sensitive",
         validation_alias="CELERY_SENSITIVE_QUEUE_NAME",
     )
+    celery_mail_queue_name: str = Field(
+        default="mail_outbound",
+        validation_alias="CELERY_MAIL_QUEUE_NAME",
+    )
     AI_PROVIDER: str = "mock"
     DIFY_API_BASE_URL: str = ""
     dify_api_key_secret: SecretStr = Field(
@@ -109,6 +113,13 @@ class Settings(BaseSettings):
     def _normalize_celery_sensitive_queue_name(cls, value: object) -> object:
         if value is None or (isinstance(value, str) and not value.strip()):
             return "ai_sensitive"
+        return value
+
+    @field_validator("celery_mail_queue_name", mode="before")
+    @classmethod
+    def _normalize_celery_mail_queue_name(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "mail_outbound"
         return value
 
     @property

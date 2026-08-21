@@ -8,6 +8,7 @@ import * as candidateCenterApi from '../src/api/candidateCenter'
 import * as comprehensiveAnalysisApi from '../src/api/comprehensiveAnalysis'
 import * as hiringDecisionsApi from '../src/api/hiringDecisions'
 import * as interviewAiApi from '../src/api/interviewAi'
+import * as offersApi from '../src/api/offers'
 import * as resumesApi from '../src/api/resumes'
 import { useAuthStore } from '../src/stores/auth'
 
@@ -36,7 +37,7 @@ const globalStubs = {
     props: ['data'],
     emits: ['row-click'],
     template:
-      '<div><div v-for="row in data" :key="row.application_id || row.round_id" class="table-row" @click="$emit(\'row-click\', row)">{{ JSON.stringify(row) }}</div><slot /></div>',
+      '<div :data-test="$attrs[\'data-test\']"><div v-for="(row, idx) in data" :key="row.application_id || row.round_id || row.id || idx" class="table-row" @click="$emit(\'row-click\', row)">{{ row.error_message_safe || JSON.stringify(row) }}</div><slot /></div>',
   },
   'el-table-column': { template: '<span />' },
   'el-card': { template: '<div><slot /></div>' },
@@ -61,6 +62,12 @@ const globalStubs = {
   },
   'el-form': { template: '<form><slot /></form>' },
   'el-form-item': { props: ['label'], template: '<div><label>{{ label }}</label><slot /></div>' },
+  'el-input': {
+    props: ['modelValue', 'type', 'rows'],
+    emits: ['update:modelValue'],
+    template:
+      '<textarea v-if="type===\'textarea\'" :data-test="$attrs[\'data-test\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" /><input v-else :data-test="$attrs[\'data-test\']" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
 }
 
 function makeUser() {
@@ -214,6 +221,28 @@ describe('CandidateCenterDetailView', () => {
       makeDetail() as never,
     )
     vi.spyOn(hiringDecisionsApi, 'listHiringDecisions').mockResolvedValue({ items: [] })
+    vi.spyOn(offersApi, 'listOffers').mockResolvedValue({ items: [] })
+    vi.spyOn(offersApi, 'getOffer').mockResolvedValue({
+      id: 'offer-1',
+      application_id: 'app-1',
+      status: 'draft',
+      hiring_decision_id: 'hd-1',
+      recipient_email_masked: 'a***@example.com',
+      recipient_name: '张三',
+      lock_version: 1,
+      version_id: 'ov-1',
+      version_no: 1,
+      content_hash: 'hash',
+      frozen: false,
+      subject: 'SECRET_SUBJECT',
+      body_html: '<p>SECRET_BODY</p>',
+      body_text: 'SECRET_BODY',
+      template_code: 'offer_console_v1',
+      template_version: '1',
+      created_at: '2026-08-21T00:00:00Z',
+      updated_at: '2026-08-21T00:00:00Z',
+    })
+    vi.spyOn(offersApi, 'listOfferAttempts').mockResolvedValue({ items: [] })
     vi.spyOn(hiringDecisionsApi, 'listHiringReasonCodes').mockResolvedValue({
       items: [
         {
@@ -460,12 +489,31 @@ describe('CandidateCenterDetailView', () => {
     vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(
       makeDetail({ pipeline_status: 'pending_offer' }) as never,
     )
+    vi.spyOn(offersApi, 'listOffers').mockResolvedValue({
+      items: [
+        {
+          id: 'offer-1',
+          application_id: 'app-1',
+          status: 'draft',
+          hiring_decision_id: 'hd-1',
+          recipient_email_masked: 'a***@example.com',
+          recipient_name: '张三',
+          lock_version: 1,
+          version_no: 1,
+          content_hash: 'hash',
+          frozen: false,
+          created_at: '2026-08-21T00:00:00Z',
+          updated_at: '2026-08-21T00:00:00Z',
+        },
+      ],
+    })
     const { wrapper } = await mountView()
     await vi.waitFor(() => expect(wrapper.text()).toContain('录用建议待后续'))
     expect(wrapper.find('[data-test="hiring-recommend-hire"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="hiring-reject"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="hiring-hold"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="hiring-decision-history"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="offer-console-panel"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('发送 Offer')
   })
 
@@ -673,5 +721,259 @@ describe('CandidateCenterDetailView', () => {
     vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockRejectedValue(new Error('boom'))
     const { wrapper } = await mountView()
     await vi.waitFor(() => expect(wrapper.text()).toContain('加载详情失败'))
+  })
+
+  function mockPendingOfferReady() {
+    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(
+      makeDetail({ pipeline_status: 'pending_offer' }) as never,
+    )
+    vi.spyOn(offersApi, 'listOffers').mockResolvedValue({
+      items: [
+        {
+          id: 'offer-1',
+          application_id: 'app-1',
+          status: 'ready',
+          hiring_decision_id: 'hd-1',
+          recipient_email_masked: 'a***@example.com',
+          recipient_name: '张三',
+          lock_version: 2,
+          version_no: 2,
+          content_hash: 'hash2',
+          frozen: true,
+          created_at: '2026-08-21T00:00:00Z',
+          updated_at: '2026-08-21T01:00:00Z',
+        },
+      ],
+    })
+    vi.spyOn(offersApi, 'getOffer').mockResolvedValue({
+      id: 'offer-1',
+      application_id: 'app-1',
+      status: 'ready',
+      hiring_decision_id: 'hd-1',
+      recipient_email_masked: 'a***@example.com',
+      recipient_name: '张三',
+      lock_version: 2,
+      version_id: 'ov-2',
+      version_no: 2,
+      content_hash: 'hash2',
+      frozen: true,
+      subject: 'SECRET_SUBJECT',
+      body_html: '<p>SECRET_BODY</p>',
+      body_text: 'SECRET_BODY',
+      template_code: 'offer_console_v1',
+      template_version: '1',
+      created_at: '2026-08-21T00:00:00Z',
+      updated_at: '2026-08-21T01:00:00Z',
+    })
+    vi.spyOn(offersApi, 'listOfferAttempts').mockResolvedValue({
+      items: [
+        {
+          id: 'att-1',
+          offer_id: 'offer-1',
+          offer_version_id: 'ov-2',
+          provider: 'console',
+          status: 'failed',
+          attempt_no: 1,
+          error_code: 'console_error',
+          error_message_safe: 'console failed',
+          started_at: '2026-08-21T01:00:00Z',
+          finished_at: '2026-08-21T01:00:01Z',
+          next_retry_at: null,
+          created_at: '2026-08-21T01:00:00Z',
+        },
+      ],
+    })
+  }
+
+  it('shows offer panel when manage and pending_offer', async () => {
+    mockPendingOfferReady()
+    const { wrapper } = await mountView()
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-test="offer-console-panel"]').exists()).toBe(true),
+    )
+    expect(wrapper.find('[data-test="offer-recipient-masked"]').text()).toContain('a***@example.com')
+    expect(wrapper.find('[data-test="offer-version-no"]').text()).toContain('2')
+  })
+
+  it('hides offer panel for execute-only', async () => {
+    mockPendingOfferReady()
+    const { wrapper } = await mountView(['interview.execute', 'profile.read'])
+    await vi.waitFor(() => expect(wrapper.text()).toContain('张三'))
+    expect(wrapper.find('[data-test="offer-console-panel"]').exists()).toBe(false)
+    expect(offersApi.listOffers).not.toHaveBeenCalled()
+  })
+
+  it('hides offer panel outside pending_offer', async () => {
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="hiring-decision-panel"]').exists()).toBe(true))
+    expect(wrapper.find('[data-test="offer-console-panel"]').exists()).toBe(false)
+  })
+
+  it('send requires confirmation mentioning console', async () => {
+    mockPendingOfferReady()
+    const sendSpy = vi.spyOn(offersApi, 'confirmOfferSend').mockResolvedValue({
+      offer_id: 'offer-1',
+      attempt_id: 'att-2',
+      status: 'sending',
+      attempt_status: 'pending',
+      attempt_no: 1,
+      lock_version: 3,
+      version_id: 'ov-2',
+      provider: 'console',
+    })
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="offer-send"]').exists()).toBe(true))
+    await wrapper.find('[data-test="offer-send"]').trigger('click')
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-test="offer-send-confirm-dialog"]').exists()).toBe(true),
+    )
+    const copy = wrapper.find('[data-test="offer-send-confirm-copy"]').text()
+    expect(copy).toContain('Console')
+    expect(copy).toContain('不会发送真实邮件')
+    await wrapper.find('[data-test="offer-send-confirm"]').trigger('click')
+    await vi.waitFor(() => expect(sendSpy).toHaveBeenCalled())
+    const [, body] = sendSpy.mock.calls[0]
+    expect(body.offer_version_id).toBe('ov-2')
+    expect(body.idempotency_key).toBeTruthy()
+  })
+
+  it('displays masked recipient and safe error only', async () => {
+    mockPendingOfferReady()
+    const { wrapper } = await mountView()
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-test="offer-console-panel"]').exists()).toBe(true),
+    )
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-test="offer-attempt-history"]').text()).toContain('console failed'),
+    )
+    const panel = wrapper.find('[data-test="offer-console-panel"]')
+    expect(panel.text()).toContain('a***@example.com')
+    expect(panel.text()).not.toContain('SECRET_SUBJECT')
+    expect(panel.text()).not.toContain('SECRET_BODY')
+    expect(panel.text()).not.toContain('alice@')
+  })
+
+  it('forbids smtp dify autosend hired copy in offer panel', async () => {
+    mockPendingOfferReady()
+    const { wrapper } = await mountView()
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-test="offer-console-panel"]').exists()).toBe(true),
+    )
+    const panel = wrapper.find('[data-test="offer-console-panel"]').text()
+    expect(panel).not.toContain('SMTP')
+    expect(panel).not.toContain('Dify')
+    expect(panel).not.toContain('自动发送')
+    expect(panel).not.toContain('hired')
+    expect(panel).not.toContain('入职完成')
+    expect(panel).not.toContain('电子签')
+    expect(wrapper.find('[data-test="offer-advance-hired"]').exists()).toBe(false)
+  })
+
+  it('disables edit and send when sending', async () => {
+    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(
+      makeDetail({ pipeline_status: 'pending_offer' }) as never,
+    )
+    vi.spyOn(offersApi, 'listOffers').mockResolvedValue({
+      items: [
+        {
+          id: 'offer-1',
+          application_id: 'app-1',
+          status: 'sending',
+          hiring_decision_id: 'hd-1',
+          recipient_email_masked: 'a***@example.com',
+          recipient_name: '张三',
+          lock_version: 3,
+          version_no: 2,
+          content_hash: 'hash2',
+          frozen: true,
+          created_at: '2026-08-21T00:00:00Z',
+          updated_at: '2026-08-21T01:00:00Z',
+        },
+      ],
+    })
+    vi.spyOn(offersApi, 'getOffer').mockResolvedValue({
+      id: 'offer-1',
+      application_id: 'app-1',
+      status: 'sending',
+      hiring_decision_id: 'hd-1',
+      recipient_email_masked: 'a***@example.com',
+      recipient_name: '张三',
+      lock_version: 3,
+      version_id: 'ov-2',
+      version_no: 2,
+      content_hash: 'hash2',
+      frozen: true,
+      subject: 's',
+      body_html: 'h',
+      body_text: 't',
+      template_code: 'offer_console_v1',
+      template_version: '1',
+      created_at: '2026-08-21T00:00:00Z',
+      updated_at: '2026-08-21T01:00:00Z',
+    })
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="offer-edit"]').exists()).toBe(true))
+    expect(wrapper.find('[data-test="offer-edit"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="offer-send"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="offer-ready"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('enables retry only when failed', async () => {
+    vi.spyOn(candidateCenterApi, 'getCandidateCenterApplicationDetail').mockResolvedValue(
+      makeDetail({ pipeline_status: 'pending_offer' }) as never,
+    )
+    vi.spyOn(offersApi, 'listOffers').mockResolvedValue({
+      items: [
+        {
+          id: 'offer-1',
+          application_id: 'app-1',
+          status: 'failed',
+          hiring_decision_id: 'hd-1',
+          recipient_email_masked: 'a***@example.com',
+          recipient_name: '张三',
+          lock_version: 4,
+          version_no: 2,
+          content_hash: 'hash2',
+          frozen: true,
+          created_at: '2026-08-21T00:00:00Z',
+          updated_at: '2026-08-21T02:00:00Z',
+        },
+      ],
+    })
+    vi.spyOn(offersApi, 'getOffer').mockResolvedValue({
+      id: 'offer-1',
+      application_id: 'app-1',
+      status: 'failed',
+      hiring_decision_id: 'hd-1',
+      recipient_email_masked: 'a***@example.com',
+      recipient_name: '张三',
+      lock_version: 4,
+      version_id: 'ov-2',
+      version_no: 2,
+      content_hash: 'hash2',
+      frozen: true,
+      subject: 's',
+      body_html: 'h',
+      body_text: 't',
+      template_code: 'offer_console_v1',
+      template_version: '1',
+      created_at: '2026-08-21T00:00:00Z',
+      updated_at: '2026-08-21T02:00:00Z',
+    })
+    const retrySpy = vi.spyOn(offersApi, 'retryOfferSend').mockResolvedValue({
+      offer_id: 'offer-1',
+      attempt_id: 'att-9',
+      status: 'sending',
+      attempt_status: 'pending',
+      attempt_no: 1,
+      lock_version: 5,
+      version_id: 'ov-2',
+      provider: 'console',
+    })
+    const { wrapper } = await mountView()
+    await vi.waitFor(() => expect(wrapper.find('[data-test="offer-retry"]').exists()).toBe(true))
+    expect(wrapper.find('[data-test="offer-retry"]').attributes('disabled')).toBeUndefined()
+    await wrapper.find('[data-test="offer-retry"]').trigger('click')
+    await vi.waitFor(() => expect(retrySpy).toHaveBeenCalled())
   })
 })

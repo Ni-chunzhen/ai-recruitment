@@ -44,11 +44,16 @@ def _script() -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
-def test_revision_015_is_head() -> None:
+def test_revision_015_in_chain_before_016() -> None:
     script = _script()
     assert script.get_revision(REVISION) is not None
-    assert script.get_current_head() == REVISION
-    assert script.get_heads() == [REVISION]
+    assert script.get_revision(REVISION).down_revision == DOWN_REVISION
+    head = script.get_current_head()
+    assert head in {REVISION, "016_offer_console_delivery"}
+    if head == "016_offer_console_delivery":
+        assert script.get_revision(head).down_revision == REVISION
+    else:
+        assert script.get_heads() == [REVISION]
 
 
 def test_015_revises_014() -> None:

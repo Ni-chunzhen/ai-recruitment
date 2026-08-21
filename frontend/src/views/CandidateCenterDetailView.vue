@@ -17,6 +17,20 @@ import {
   type HiringReasonCodeItem,
 } from '../api/hiringDecisions'
 import {
+  confirmOfferSend,
+  createOffer,
+  getOffer,
+  listOfferAttempts,
+  listOffers,
+  markOfferReady,
+  retryOfferSend,
+  updateOfferDraft,
+  voidOffer,
+  type OfferAttemptOut,
+  type OfferDetailOut,
+  type OfferSummaryOut,
+} from '../api/offers'
+import {
   generateComprehensiveAnalysis,
   getComprehensiveAnalysis,
   getComprehensiveAnalysisVersion,
@@ -52,6 +66,21 @@ const comprehensiveLoading = ref(false)
 const comprehensiveError = ref('')
 const comprehensiveGenerating = ref(false)
 
+const offerList = ref<OfferSummaryOut[]>([])
+const offerDetail = ref<OfferDetailOut | null>(null)
+const offerAttempts = ref<OfferAttemptOut[]>([])
+const offerLoading = ref(false)
+const offerError = ref('')
+const offerBusy = ref(false)
+const offerEditVisible = ref(false)
+const offerPreviewVisible = ref(false)
+const offerSendConfirmVisible = ref(false)
+const offerVoidVisible = ref(false)
+const editSubject = ref('')
+const editBodyHtml = ref('')
+const editBodyText = ref('')
+const voidReasonCode = ref('withdrawn')
+
 const candidateId = computed(() => route.params.candidateId as string)
 const applicationId = computed(() => route.params.applicationId as string)
 const hasCurrentDetail = computed(
@@ -67,6 +96,43 @@ const canWriteHiring = computed(
     detail.value?.pipeline_status === 'interviewing' &&
     detail.value?.status === 'in_progress',
 )
+const showOfferConsole = computed(
+  () =>
+    canManage.value &&
+    detail.value?.pipeline_status === 'pending_offer' &&
+    detail.value?.status === 'in_progress',
+)
+const activeOffer = computed(() => {
+  return (
+    offerList.value.find((item) => item.status !== 'voided') ||
+    offerList.value[0] ||
+    null
+  )
+})
+const offerContentLocked = computed(() => {
+  const status = activeOffer.value?.status
+  return status === 'sending' || status === 'sent'
+})
+const canEditOffer = computed(
+  () =>
+    Boolean(activeOffer.value) &&
+    !offerContentLocked.value &&
+    ['draft', 'ready'].includes(activeOffer.value?.status || ''),
+)
+const canMarkReady = computed(() => activeOffer.value?.status === 'draft')
+const canConfirmSend = computed(() => activeOffer.value?.status === 'ready')
+const canRetryOffer = computed(() => activeOffer.value?.status === 'failed')
+const canVoidOffer = computed(() =>
+  ['draft', 'ready', 'failed'].includes(activeOffer.value?.status || ''),
+)
+const offerStatusLabel: Record<string, string> = {
+  draft: '草稿',
+  ready: '已就绪',
+  sending: '发送中',
+  sent: '已发送（Console）',
+  failed: '发送失败',
+  voided: '已作废',
+}
 const canGenerateComprehensive = computed(
   () =>
     canManage.value &&
@@ -148,10 +214,207 @@ function pipelineText(status: string) {
 }
 
 function newIdempotencyKey() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID()
   }
-  return `hd-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  return `idem-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function offerApiError(err: unknown, fallback: string) {
+  const status = (err as { response?: { status?: number; data?: { detail?: unknown } } })
+    ?.response?.status
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data
+    ?.detail
+  if (status === 401) return '登录已失效，请重新登录'
+  if (status === 403) return '无权限操作 Offer'
+  if (status === 404) return 'Offer 不存在或已不可用'
+  if (status === 409) return typeof detail === 'string' ? detail : '状态冲突，请刷新后重试'
+  if (status === 422) return typeof detail === 'string' ? detail : '请求参数无效'
+  return fallback
+}
+
+async function loadOffers() {
+  if (!showOfferConsole.value) {
+    offerList.value = []
+    offerDetail.value = null
+    offerAttempts.value = []
+    offerError.value = ''
+    return
+  }
+  offerLoading.value = true
+  offerError.value = ''
+  try {
+    const listed = await listOffers(applicationId.value)
+    offerList.value = listed.items
+    const current =
+      listed.items.find((item) => item.status !== 'voided') || listed.items[0] || null
+    if (!current) {
+      offerDetail.value = null
+      offerAttempts.value = []
+      return
+    }
+    offerDetail.value = await getOffer(current.id)
+    const attempts = await listOfferAttempts(current.id)
+    offerAttempts.value = attempts.items
+  } catch (err: unknown) {
+    offerError.value = offerApiError(err, '加载 Offer 失败')
+    offerList.value = []
+    offerDetail.value = null
+    offerAttempts.value = []
+  } finally {
+    offerLoading.value = false
+  }
+}
+
+async function onCreateOffer() {
+  if (!showOfferConsole.value || offerBusy.value) return
+  offerBusy.value = true
+  try {
+    await createOffer(applicationId.value, { idempotency_key: newIdempotencyKey() })
+    ElMessage.success('已创建 Offer 草稿')
+    await loadOffers()
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '创建 Offer 失败'))
+  } finally {
+    offerBusy.value = false
+  }
+}
+
+async function openOfferEdit() {
+  if (!canEditOffer.value || !activeOffer.value) return
+  try {
+    const detailRow = await getOffer(activeOffer.value.id)
+    offerDetail.value = detailRow
+    editSubject.value = detailRow.subject
+    editBodyHtml.value = detailRow.body_html
+    editBodyText.value = detailRow.body_text
+    offerEditVisible.value = true
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '加载草稿失败'))
+  }
+}
+
+async function saveOfferDraft() {
+  if (!activeOffer.value || offerBusy.value) return
+  offerBusy.value = true
+  try {
+    await updateOfferDraft(activeOffer.value.id, {
+      subject: editSubject.value,
+      body_html: editBodyHtml.value,
+      body_text: editBodyText.value,
+      lock_version: activeOffer.value.lock_version,
+      idempotency_key: newIdempotencyKey(),
+    })
+    ElMessage.success('草稿已保存')
+    offerEditVisible.value = false
+    await loadOffers()
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '保存草稿失败'))
+  } finally {
+    offerBusy.value = false
+  }
+}
+
+async function onMarkReady() {
+  if (!canMarkReady.value || !activeOffer.value || offerBusy.value) return
+  offerBusy.value = true
+  try {
+    await markOfferReady(activeOffer.value.id, {
+      lock_version: activeOffer.value.lock_version,
+      idempotency_key: newIdempotencyKey(),
+    })
+    ElMessage.success('Offer 已标记就绪')
+    await loadOffers()
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '标记就绪失败'))
+  } finally {
+    offerBusy.value = false
+  }
+}
+
+async function openOfferPreview() {
+  if (!activeOffer.value) return
+  try {
+    offerDetail.value = await getOffer(activeOffer.value.id)
+    offerPreviewVisible.value = true
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '预览失败'))
+  }
+}
+
+async function openSendConfirm() {
+  if (!canConfirmSend.value || !activeOffer.value) return
+  try {
+    offerDetail.value = await getOffer(activeOffer.value.id)
+    if (!offerDetail.value.version_id) {
+      ElMessage.error('缺少可发送版本，请刷新后重试')
+      return
+    }
+    offerSendConfirmVisible.value = true
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '准备发送失败'))
+  }
+}
+
+async function onConfirmSend() {
+  if (!activeOffer.value || !offerDetail.value?.version_id || offerBusy.value) return
+  offerBusy.value = true
+  try {
+    await confirmOfferSend(activeOffer.value.id, {
+      offer_version_id: offerDetail.value.version_id,
+      lock_version: activeOffer.value.lock_version,
+      idempotency_key: newIdempotencyKey(),
+    })
+    ElMessage.success('已确认发送（Console）')
+    offerSendConfirmVisible.value = false
+    await loadOffers()
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '确认发送失败'))
+  } finally {
+    offerBusy.value = false
+  }
+}
+
+async function onRetryOffer() {
+  if (!canRetryOffer.value || !activeOffer.value || offerBusy.value) return
+  offerBusy.value = true
+  try {
+    await retryOfferSend(activeOffer.value.id, {
+      lock_version: activeOffer.value.lock_version,
+      idempotency_key: newIdempotencyKey(),
+    })
+    ElMessage.success('已重新入队发送尝试')
+    await loadOffers()
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '重新发送失败'))
+  } finally {
+    offerBusy.value = false
+  }
+}
+
+function openVoidConfirm() {
+  if (!canVoidOffer.value) return
+  voidReasonCode.value = 'withdrawn'
+  offerVoidVisible.value = true
+}
+
+async function onVoidOffer() {
+  if (!canVoidOffer.value || !activeOffer.value || offerBusy.value) return
+  offerBusy.value = true
+  try {
+    await voidOffer(activeOffer.value.id, {
+      lock_version: activeOffer.value.lock_version,
+      void_reason_code: voidReasonCode.value || 'withdrawn',
+      idempotency_key: newIdempotencyKey(),
+    })
+    ElMessage.success('Offer 已作废')
+    offerVoidVisible.value = false
+    await loadOffers()
+  } catch (err: unknown) {
+    ElMessage.error(offerApiError(err, '作废失败'))
+  } finally {
+    offerBusy.value = false
+  }
 }
 
 async function resolveValidAnalysis(rounds: CandidateCenterRound[]) {
@@ -275,10 +538,14 @@ async function loadDetail() {
         loadReasonCatalog(),
         resolveValidAnalysis(detail.value.rounds || []),
         loadComprehensive(),
+        loadOffers(),
       ])
     } else {
       comprehensiveSet.value = null
       comprehensiveDetail.value = null
+      offerList.value = []
+      offerDetail.value = null
+      offerAttempts.value = []
     }
   } catch {
     loadFailed.value = true
@@ -420,7 +687,7 @@ onMounted(() => {
         <section v-if="canManage" class="panel" data-test="hiring-decision-panel">
           <h2>面后人工决策</h2>
           <p v-if="detail.pipeline_status === 'pending_offer'" class="hint">
-            当前为录用建议待后续，不提供发送能力。
+            录用建议已确认；Offer 草稿与 Console 投递请使用下方 Offer 面板。
           </p>
           <div v-if="canWriteHiring" class="hiring-actions">
             <el-button
@@ -483,6 +750,110 @@ onMounted(() => {
               </template>
             </el-table-column>
           </el-table>
+        </section>
+
+        <section
+          v-if="showOfferConsole"
+          class="panel"
+          data-test="offer-console-panel"
+        >
+          <h2>Offer（Console 演练）</h2>
+          <p class="hint">
+            仅管理权限可操作；投递为 Console 演练，不会发送真实邮件。
+          </p>
+          <p v-if="offerError" class="hint warn" data-test="offer-error">{{ offerError }}</p>
+          <div v-if="!activeOffer" class="hiring-actions">
+            <el-button
+              data-test="offer-create"
+              type="primary"
+              plain
+              :loading="offerBusy"
+              @click="onCreateOffer"
+            >
+              创建 Offer 草稿
+            </el-button>
+          </div>
+          <template v-else>
+            <p data-test="offer-status">
+              状态：{{ offerStatusLabel[activeOffer.status] || activeOffer.status }}
+            </p>
+            <p data-test="offer-recipient-masked">
+              收件人：{{ activeOffer.recipient_email_masked || '—' }}（{{ activeOffer.recipient_name }}）
+            </p>
+            <p data-test="offer-version-no">
+              版本：{{ activeOffer.version_no ?? '—' }} · 更新于 {{ activeOffer.updated_at }}
+            </p>
+            <div class="hiring-actions">
+              <el-button
+                data-test="offer-edit"
+                plain
+                :disabled="!canEditOffer || offerBusy"
+                @click="openOfferEdit"
+              >
+                编辑草稿
+              </el-button>
+              <el-button
+                data-test="offer-ready"
+                plain
+                :disabled="!canMarkReady || offerBusy"
+                @click="onMarkReady"
+              >
+                标记就绪
+              </el-button>
+              <el-button
+                data-test="offer-preview"
+                plain
+                :loading="offerLoading"
+                @click="openOfferPreview"
+              >
+                预览
+              </el-button>
+              <el-button
+                data-test="offer-send"
+                type="primary"
+                plain
+                :disabled="!canConfirmSend || offerBusy"
+                @click="openSendConfirm"
+              >
+                确认发送
+              </el-button>
+              <el-button
+                data-test="offer-retry"
+                plain
+                :disabled="!canRetryOffer || offerBusy"
+                @click="onRetryOffer"
+              >
+                失败后重发
+              </el-button>
+              <el-button
+                data-test="offer-void"
+                plain
+                :disabled="!canVoidOffer || offerBusy"
+                @click="openVoidConfirm"
+              >
+                作废
+              </el-button>
+            </div>
+            <el-table
+              data-test="offer-attempt-history"
+              :data="offerAttempts"
+              stripe
+              style="margin-top: 12px"
+            >
+              <el-table-column label="次序" width="70">
+                <template #default="{ row }">{{ row.attempt_no }}</template>
+              </el-table-column>
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }">{{ row.status }}</template>
+              </el-table-column>
+              <el-table-column label="时间" min-width="160">
+                <template #default="{ row }">{{ row.created_at }}</template>
+              </el-table-column>
+              <el-table-column label="脱敏错误" min-width="200">
+                <template #default="{ row }">{{ row.error_message_safe || '—' }}</template>
+              </el-table-column>
+            </el-table>
+          </template>
         </section>
 
         <section v-if="canManage" class="panel" data-test="comprehensive-analysis-panel">
@@ -736,6 +1107,108 @@ onMounted(() => {
               @click="submitDecision"
             >
               确认
+            </el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog
+          v-model="offerEditVisible"
+          data-test="offer-edit-dialog"
+          title="编辑 Offer 草稿"
+          width="640px"
+        >
+          <el-form label-width="80px">
+            <el-form-item label="主题">
+              <el-input v-model="editSubject" data-test="offer-edit-subject" />
+            </el-form-item>
+            <el-form-item label="正文 HTML">
+              <el-input
+                v-model="editBodyHtml"
+                data-test="offer-edit-body-html"
+                type="textarea"
+                :rows="4"
+              />
+            </el-form-item>
+            <el-form-item label="正文纯文本">
+              <el-input
+                v-model="editBodyText"
+                data-test="offer-edit-body-text"
+                type="textarea"
+                :rows="4"
+              />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="offerEditVisible = false">取消</el-button>
+            <el-button
+              data-test="offer-edit-save"
+              type="primary"
+              :loading="offerBusy"
+              @click="saveOfferDraft"
+            >
+              保存
+            </el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog
+          v-model="offerPreviewVisible"
+          data-test="offer-preview-dialog"
+          title="Offer 预览"
+          width="640px"
+        >
+          <template v-if="offerDetail">
+            <p><strong>主题：</strong>{{ offerDetail.subject }}</p>
+            <p data-test="offer-preview-body-text">{{ offerDetail.body_text }}</p>
+            <div data-test="offer-preview-body-html" v-html="offerDetail.body_html" />
+          </template>
+          <template #footer>
+            <el-button @click="offerPreviewVisible = false">关闭</el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog
+          v-model="offerSendConfirmVisible"
+          data-test="offer-send-confirm-dialog"
+          title="确认发送"
+          width="520px"
+        >
+          <p data-test="offer-send-confirm-copy">
+            Console 演练投递，不会发送真实邮件。确认后将创建发送尝试并入队 mail_outbound。
+          </p>
+          <template #footer>
+            <el-button @click="offerSendConfirmVisible = false">取消</el-button>
+            <el-button
+              data-test="offer-send-confirm"
+              type="primary"
+              :loading="offerBusy"
+              @click="onConfirmSend"
+            >
+              确认发送
+            </el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog
+          v-model="offerVoidVisible"
+          data-test="offer-void-dialog"
+          title="作废 Offer"
+          width="480px"
+        >
+          <el-form label-width="100px">
+            <el-form-item label="原因码">
+              <el-input v-model="voidReasonCode" data-test="offer-void-reason" />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="offerVoidVisible = false">取消</el-button>
+            <el-button
+              data-test="offer-void-confirm"
+              type="danger"
+              :loading="offerBusy"
+              @click="onVoidOffer"
+            >
+              确认作废
             </el-button>
           </template>
         </el-dialog>

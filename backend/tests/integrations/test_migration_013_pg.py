@@ -1349,12 +1349,21 @@ def test_013_revision_is_registered() -> None:
     revision = script.get_revision(REVISION)
     assert revision is not None
     assert revision.down_revision == DOWN_REVISION
-    assert script.get_current_head() == "015_comprehensive_interview_analysis"
+    head = script.get_current_head()
+    assert head in {
+        "015_comprehensive_interview_analysis",
+        "016_offer_console_delivery",
+    }
     assert script.get_revision("014_hiring_decisions").down_revision == REVISION
     assert (
         script.get_revision("015_comprehensive_interview_analysis").down_revision
         == "014_hiring_decisions"
     )
+    if head == "016_offer_console_delivery":
+        assert (
+            script.get_revision(head).down_revision
+            == "015_comprehensive_interview_analysis"
+        )
 
 
 def test_012_to_013_roundtrip_and_constraints(monkeypatch: pytest.MonkeyPatch) -> None:

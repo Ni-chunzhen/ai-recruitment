@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     interviews,
     invitations,
     jobs,
+    offers,
     resumes,
     users,
 )
@@ -32,6 +33,7 @@ api_router.include_router(admin_ai_tasks.router)
 api_router.include_router(resumes.router)
 api_router.include_router(hiring_decisions.router)
 api_router.include_router(comprehensive_analyses.router)
+api_router.include_router(offers.router)
 api_router.include_router(interviews.router)
 api_router.include_router(invitations.router)
 api_router.include_router(interview_transcripts.router)
