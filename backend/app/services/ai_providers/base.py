@@ -10,6 +10,7 @@ from app.models.ai_task import (
     AI_TASK_RETRY_COUNTDOWNS,
     ERROR_CATEGORY_NON_RETRYABLE,
     ERROR_CATEGORY_RETRYABLE,
+    TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_JD_PARSE,
@@ -19,6 +20,7 @@ from app.models.ai_task import (
 )
 from app.schemas.ai_task import JdParseResult, ScoreDimensionRecommendResult
 from app.schemas.interview_ai import (
+    InterviewComprehensiveAnalyzeResult,
     InterviewQuestionGenerateResult,
     InterviewRoundAnalyzeResult,
 )
@@ -60,6 +62,10 @@ def validate_ai_result(task_type: str, payload: object) -> dict[str, Any]:
             )
         if task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
             return InterviewRoundAnalyzeResult.model_validate(payload).model_dump(
+                mode="json"
+            )
+        if task_type == TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE:
+            return InterviewComprehensiveAnalyzeResult.model_validate(payload).model_dump(
                 mode="json"
             )
     except ValidationError as exc:

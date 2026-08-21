@@ -11,6 +11,7 @@ TaskType = Literal[
     "RESUME_SCORE",
     "INTERVIEW_QUESTION_GENERATE",
     "INTERVIEW_ROUND_ANALYZE",
+    "INTERVIEW_COMPREHENSIVE_ANALYZE",
 ]
 AITaskStatus = Literal[
     "pending",

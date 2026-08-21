@@ -21,6 +21,7 @@ from app.models.ai_task import (
     AI_TASK_STATUS_RUNNING,
     AI_TASK_STATUS_SUCCEEDED,
     SENSITIVE_AI_TASK_TYPES,
+    TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_RESUME_PARSE,
@@ -54,6 +55,7 @@ STAGE8_TASK_TYPES = frozenset(
     {
         TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
         TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+        TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     }
 )
 _STAGE8_OUTPUT_INVALID_EXCEPTIONS = (
@@ -121,6 +123,20 @@ def _analysis_memory_input(dto: Any) -> dict[str, Any]:
     }
 
 
+def _comprehensive_memory_input(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Provider input from Task-2 frozen snapshot only — never decrypt transcript/JD."""
+    snap = dict(snapshot or {})
+    return {
+        "application_id": snap.get("application_id"),
+        "schema_version": snap.get("schema_version"),
+        "workflow_key": snap.get("workflow_key"),
+        "workflow_version": snap.get("workflow_version"),
+        "input_snapshot_hash": snap.get("input_snapshot_hash"),
+        "round_refs": snap.get("round_refs") or [],
+        "coverage_report": snap.get("coverage_report") or {},
+    }
+
+
 async def _prepare_stage8_provider_input(
     session: AsyncSession, task: AITask
 ) -> dict[str, Any]:
@@ -134,6 +150,12 @@ async def _prepare_stage8_provider_input(
 
         dto = await load_analysis_provider_input(session, task_id=task.id)
         return _analysis_memory_input(dto)
+    if task.task_type == TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE:
+        from app.services.comprehensive_analyses import assert_no_forbidden_snapshot_keys
+
+        prepared = _comprehensive_memory_input(dict(task.input_snapshot or {}))
+        assert_no_forbidden_snapshot_keys(prepared)
+        return prepared
     return dict(task.input_snapshot or {})
 
 
@@ -284,6 +306,12 @@ def _stage8_success_extra(
         extra["question_count"] = len(result.get("questions") or [])
     if task.task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
         extra["dimension_count"] = len(result.get("dimensions") or [])
+    if task.task_type == TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE:
+        extra["dimension_note_count"] = len(result.get("dimension_notes") or [])
+        snap = dict(task.input_snapshot or {})
+        coverage = snap.get("coverage_report") if isinstance(snap.get("coverage_report"), dict) else {}
+        if coverage.get("eligible_round_count") is not None:
+            extra["eligible_round_count"] = coverage.get("eligible_round_count")
     return extra
 
 
@@ -502,6 +530,23 @@ async def _after_task_success(
         from app.services.interview_analyses import persist_analysis_generation_result
 
         version = await persist_analysis_generation_result(
+            session,
+            task_id=task.id,
+            payload=outcome.result,
+            actor=await _actor_for_ai_task(session, task),
+            request_context=_worker_request_context(task),
+        )
+        version_id = getattr(version, "id", None)
+        return {"version_id": str(version_id)} if version_id is not None else {}
+    if (
+        task.task_type == TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE
+        and outcome.result is not None
+    ):
+        from app.services.comprehensive_analyses import (
+            persist_comprehensive_analysis_result,
+        )
+
+        version = await persist_comprehensive_analysis_result(
             session,
             task_id=task.id,
             payload=outcome.result,

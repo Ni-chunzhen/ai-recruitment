@@ -26,13 +26,14 @@ EXPECTED_TASK_TYPE_LITERALS = frozenset(
         "RESUME_SCORE",
         "INTERVIEW_QUESTION_GENERATE",
         "INTERVIEW_ROUND_ANALYZE",
+        "INTERVIEW_COMPREHENSIVE_ANALYZE",
     }
 )
 
 
-def test_task_type_literal_six_exact_values() -> None:
+def test_task_type_literal_seven_exact_values() -> None:
     assert set(get_args(TaskType)) == EXPECTED_TASK_TYPE_LITERALS
-    assert len(get_args(TaskType)) == 6
+    assert len(get_args(TaskType)) == 7
 
 
 def test_task_type_literal_matches_orm_task_types() -> None:

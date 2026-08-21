@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from app.models.ai_task import (
+    TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_JD_PARSE,
@@ -270,6 +271,64 @@ def mock_interview_round_analyze(
     }
 
 
+def mock_interview_comprehensive_analyze(
+    input_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Structured advisory mock — no hire/reject/Offer language."""
+    snap = input_snapshot or {}
+    notes: list[dict[str, Any]] = []
+    scores: list[int] = []
+    for ref in snap.get("round_refs") or []:
+        if not isinstance(ref, dict):
+            continue
+        for dim in ref.get("dimensions") or []:
+            if not isinstance(dim, dict):
+                continue
+            key = str(dim.get("dimension_key") or "").strip()
+            if not key:
+                continue
+            raw_score = dim.get("score")
+            score = int(raw_score) if isinstance(raw_score, int) and not isinstance(
+                raw_score, bool
+            ) else 4
+            if score < 1 or score > 5:
+                score = 4
+            scores.append(score)
+            notes.append(
+                {
+                    "dimension_key": key,
+                    "score": score,
+                    "note": f"{key}综合参考分基于已纳入轮次结构化快照。",
+                }
+            )
+    if not notes:
+        notes.append(
+            {
+                "dimension_key": "general",
+                "score": 3,
+                "note": "缺少维度快照时给出中性结构化汇总。",
+            }
+        )
+        scores.append(3)
+    avg = sum(scores) / len(scores)
+    coverage = snap.get("coverage_report") if isinstance(snap.get("coverage_report"), dict) else {}
+    eligible = coverage.get("eligible_round_count")
+    single = coverage.get("single_round_only")
+    coverage_hint = ""
+    if single is True:
+        coverage_hint = "当前覆盖为单轮合格分析。"
+    elif isinstance(eligible, int):
+        coverage_hint = f"已纳入{eligible}轮合格分析。"
+    return {
+        "overall_summary": (
+            f"综合参考：基于结构化轮次快照的辅助汇总。{coverage_hint}"
+            "结果仅供招聘管理侧参考，不触发流程状态变更。"
+        )[:2000],
+        "overall_score": f"{avg:.2f}",
+        "dimension_notes": notes[:50],
+    }
+
+
 async def run_mock(
     *,
     task_type: str,
@@ -285,6 +344,7 @@ async def run_mock(
     if task_type not in {
         TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
         TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+        TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     }:
         raw_request["input"] = input_snapshot
     try:
@@ -314,6 +374,10 @@ async def run_mock(
         elif task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
             result = validate_ai_result(
                 task_type, mock_interview_round_analyze(input_snapshot)
+            )
+        elif task_type == TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE:
+            result = validate_ai_result(
+                task_type, mock_interview_comprehensive_analyze(input_snapshot)
             )
         else:
             return ProviderOutcome(

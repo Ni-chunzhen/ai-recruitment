@@ -12,6 +12,7 @@ from app.core.config import Settings, get_settings
 from app.models.ai_task import (
     ERROR_CATEGORY_NON_RETRYABLE,
     ERROR_CATEGORY_RETRYABLE,
+    TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     TASK_TYPE_JD_PARSE,
@@ -1008,6 +1009,11 @@ async def run_dify(
     task_type: str,
     input_snapshot: dict[str, Any],
 ) -> ProviderOutcome:
+    if task_type == TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE:
+        from app.services.ai_providers.mock import run_mock
+
+        return await run_mock(task_type=task_type, input_snapshot=input_snapshot)
+
     if task_type == TASK_TYPE_INTERVIEW_ROUND_ANALYZE:
         from app.services.ai_providers.mock import run_mock
 

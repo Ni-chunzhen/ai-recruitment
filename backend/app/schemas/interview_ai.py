@@ -155,3 +155,37 @@ class InterviewEvidenceSegment(InterviewAIModel):
     segment_no: int = Field(gt=0)
     is_included_in_analysis: bool
     text: str
+
+
+class ComprehensiveDimensionNote(InterviewAIModel):
+    dimension_key: NonEmptyStr
+    score: int | None = None
+    note: NonEmptyStr = Field(min_length=1, max_length=500)
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def _score_int(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("score must be an integer")
+        if value < 1 or value > 5:
+            raise ValueError("score must be between 1 and 5")
+        return value
+
+
+class InterviewComprehensiveAnalyzeResult(InterviewAIModel):
+    """Mock/provider output for comprehensive analysis. Coverage gaps are server-owned."""
+
+    overall_summary: NonEmptyStr = Field(min_length=1, max_length=2000)
+    overall_score: Decimal | None = None
+    dimension_notes: list[ComprehensiveDimensionNote] = Field(
+        default_factory=list, max_length=50
+    )
+
+    @field_validator("overall_score")
+    @classmethod
+    def _finite_optional_score(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and not value.is_finite():
+            raise ValueError("overall_score must be finite")
+        return value

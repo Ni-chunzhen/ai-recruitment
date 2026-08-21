@@ -628,9 +628,10 @@ def test_no_arbitrary_task_id_execute_endpoint_added() -> None:
 # --- Analyze-sensitive Task 1: whitelist gate ---
 
 
-def test_sensitive_ai_task_types_exactly_question_and_analyze() -> None:
+def test_sensitive_ai_task_types_exactly_question_analyze_and_comprehensive() -> None:
     from app.models.ai_task import (
         SENSITIVE_AI_TASK_TYPES,
+        TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
         TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
         TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
     )
@@ -638,8 +639,9 @@ def test_sensitive_ai_task_types_exactly_question_and_analyze() -> None:
     assert SENSITIVE_AI_TASK_TYPES == {
         TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
         TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+        TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     }
-    assert len(SENSITIVE_AI_TASK_TYPES) == 2
+    assert len(SENSITIVE_AI_TASK_TYPES) == 3
 
 
 def test_process_sensitive_allows_interview_round_analyze(monkeypatch) -> None:
@@ -1086,3 +1088,100 @@ def test_worker_module_has_no_toplevel_services_ai_tasks_import() -> None:
     header = "\n".join(lines)
     assert "from app.services.ai_tasks import" not in header
     assert "import app.services.ai_tasks" not in header
+
+
+# --- Comprehensive analyze Task 3 ---
+
+
+def test_process_sensitive_allows_comprehensive(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.models.ai_task import TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE
+    from app.workers import ai_tasks as worker_mod
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type=TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
+        status="pending",
+    )
+    calls: list = []
+
+    async def fake_process(task_id):
+        calls.append(task_id)
+        return {"status": "ok", "via": "process_async"}
+
+    monkeypatch.setattr(worker_mod, "_process_ai_task_async", fake_process)
+    _patch_worker_db_session(
+        monkeypatch, worker_mod, get_task=AsyncMock(return_value=task)
+    )
+
+    result = worker_mod.process_sensitive_ai_task.run(str(task.id))
+    assert result == {"status": "ok", "via": "process_async"}
+    assert calls == [task.id]
+
+
+def test_default_entry_reroutes_comprehensive(monkeypatch) -> None:
+    from app.models.ai_task import TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE
+
+    _assert_default_preclaim_reroute(
+        monkeypatch, task_type=TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE
+    )
+
+
+@pytest.mark.asyncio
+async def test_retry_comprehensive_uses_sensitive_enqueue(monkeypatch) -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.models.ai_task import (
+        AI_TASK_STATUS_FAILED,
+        TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
+    )
+    from app.services import ai_tasks as svc
+    from app.services.audit import RequestContext
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type=TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
+        status=AI_TASK_STATUS_FAILED,
+        business_id=uuid4(),
+        retry_cycle_no=0,
+        cycle_attempt_count=2,
+        attempt_count=2,
+        error_code="x",
+        error_message="y",
+        error_category="retryable",
+        result_payload={"a": 1},
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    session.flush = AsyncMock()
+    session.commit = AsyncMock()
+
+    unified = MagicMock()
+    default = MagicMock()
+    monkeypatch.setattr(svc, "enqueue_sensitive_interview_ai_task", unified)
+    monkeypatch.setattr(svc, "enqueue_ai_task", default)
+    monkeypatch.setattr(svc, "record_audit", AsyncMock())
+    monkeypatch.setattr(svc, "get_ai_task_by_id", AsyncMock(return_value=task))
+    monkeypatch.setattr(
+        svc,
+        "to_ai_task_out",
+        lambda t, **_k: SimpleNamespace(id=t.id, task_type=t.task_type, status=t.status),
+    )
+
+    await svc.retry_ai_task(
+        session,
+        task_id=task.id,
+        actor=SimpleNamespace(id=uuid4()),
+        request_context=RequestContext(request_id="test-retry-comprehensive"),
+    )
+    unified.assert_called_once_with(task.id)
+    default.assert_not_called()

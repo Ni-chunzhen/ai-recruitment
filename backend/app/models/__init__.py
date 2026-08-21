@@ -36,6 +36,7 @@ from app.models.ai_task import (  # noqa: F401
     ERROR_CATEGORY_RETRYABLE,
     TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
     TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
+    TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
     TASK_TYPE_JD_PARSE,
     TASK_TYPE_RESUME_PARSE,
     TASK_TYPE_RESUME_SCORE,
@@ -107,6 +108,14 @@ from app.models.interview_ai import (  # noqa: F401
     InterviewRoundAnalysisDimension,
     InterviewRoundAnalysisEvidence,
     InterviewRoundAnalysisVersion,
+)
+from app.models.comprehensive_analysis import (  # noqa: F401
+    COMPREHENSIVE_GAP_CODES,
+    COMPREHENSIVE_SNAPSHOT_SCHEMA_VERSION,
+    COMPREHENSIVE_WORKFLOW_KEY,
+    COMPREHENSIVE_WORKFLOW_VERSION,
+    ApplicationComprehensiveAnalysis,
+    ApplicationComprehensiveAnalysisVersion,
 )
 from app.models.invitation import (  # noqa: F401
     CHANNEL_CORPORATE_EMAIL,

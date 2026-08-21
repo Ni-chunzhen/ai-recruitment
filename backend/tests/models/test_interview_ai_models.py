@@ -427,6 +427,7 @@ def test_task_types_include_stage8_and_legacy() -> None:
         BUSINESS_TYPE_JOB,
         BUSINESS_TYPE_RESUME_VERSION,
         BUSINESS_TYPES,
+        TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE,
         TASK_TYPE_INTERVIEW_QUESTION_GENERATE,
         TASK_TYPE_INTERVIEW_ROUND_ANALYZE,
         TASK_TYPE_JD_PARSE,
@@ -438,7 +439,12 @@ def test_task_types_include_stage8_and_legacy() -> None:
 
     assert TASK_TYPE_INTERVIEW_QUESTION_GENERATE == "INTERVIEW_QUESTION_GENERATE"
     assert TASK_TYPE_INTERVIEW_ROUND_ANALYZE == "INTERVIEW_ROUND_ANALYZE"
-    assert TASK_TYPES == EXPECTED_TASK_TYPES
+    assert TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE == (
+        "INTERVIEW_COMPREHENSIVE_ANALYZE"
+    )
+    assert EXPECTED_TASK_TYPES <= TASK_TYPES
+    assert TASK_TYPE_INTERVIEW_COMPREHENSIVE_ANALYZE in TASK_TYPES
+    assert len(TASK_TYPES) == 7
     migration_source = MIGRATION_013.read_text(encoding="utf-8")
     for task_type in EXPECTED_TASK_TYPES:
         assert task_type in migration_source
