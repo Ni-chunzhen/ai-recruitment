@@ -393,3 +393,281 @@ def test_ready_checks_still_only_postgres_and_redis() -> None:
     assert "dify" not in src.lower()
     assert "minio" not in src.lower()
     assert "smtp" not in src.lower()
+
+
+@pytest.fixture
+def fernet_key(monkeypatch: pytest.MonkeyPatch):
+    from cryptography.fernet import Fernet
+
+    from app.core.config import get_settings
+
+    key = Fernet.generate_key()
+    monkeypatch.setenv("DATA_ENCRYPTION_KEY", key.decode("ascii"))
+    get_settings.cache_clear()
+    yield key
+    get_settings.cache_clear()
+
+
+def _disabled_summary() -> dict:
+    summary = _safe_summary()
+    for block_name in ("dify", "minio"):
+        block = summary[block_name]
+        for key, field in list(block.items()):
+            if not isinstance(field, dict):
+                continue
+            field = dict(field)
+            field["enabled"] = False
+            field["status"] = "disabled"
+            block[key] = field
+    summary["restart_required"] = True
+    return summary
+
+
+def test_put_enabled_false_requires_schema_and_returns_disabled(
+    lifespan_patches,
+) -> None:
+    """system_admin can PUT enabled=false maps; summary shows disabled; no secrets."""
+    disabled = _disabled_summary()
+    with (
+        patch(
+            "app.api.v1.endpoints.admin_integrations.update_dify",
+            new_callable=AsyncMock,
+            return_value=disabled,
+        ) as mock_dify,
+        patch(
+            "app.api.v1.endpoints.admin_integrations.update_minio",
+            new_callable=AsyncMock,
+            return_value=disabled,
+        ) as mock_minio,
+    ):
+        client = _client_for(_user(PERM))
+        dify_body = {
+            "enabled": {"api_base_url": False, "api_key": False},
+            "api_key": "",
+        }
+        minio_body = {
+            "enabled": {
+                "endpoint": False,
+                "access_key": False,
+                "secret_key": False,
+                "bucket": False,
+            },
+            "secret_key": "",
+        }
+        put_d = client.put(f"{BASE}/dify", json=dify_body)
+        put_m = client.put(f"{BASE}/minio", json=minio_body)
+        assert put_d.status_code == 200, put_d.text
+        assert put_m.status_code == 200, put_m.text
+        body_d = put_d.json()
+        body_m = put_m.json()
+        assert body_d["restart_required"] is True
+        assert body_m["restart_required"] is True
+        assert body_d["dify"]["api_key"]["enabled"] is False
+        assert body_d["dify"]["api_key"]["status"] == "disabled"
+        assert body_d["dify"]["api_base_url"]["enabled"] is False
+        assert body_m["minio"]["secret_key"]["enabled"] is False
+        assert body_m["minio"]["secret_key"]["status"] == "disabled"
+        assert "value" not in body_d["dify"]["api_key"]
+        assert "value" not in body_m["minio"]["secret_key"]
+        _assert_no_secrets(body_d)
+        _assert_no_secrets(body_m)
+
+        mock_dify.assert_awaited_once()
+        mock_minio.assert_awaited_once()
+        assert mock_dify.await_args.kwargs["payload"]["enabled"] == {
+            "api_base_url": False,
+            "api_key": False,
+        }
+        assert mock_dify.await_args.kwargs["payload"]["api_key"] == ""
+        assert mock_minio.await_args.kwargs["payload"]["enabled"]["secret_key"] is False
+        assert mock_minio.await_args.kwargs["payload"]["secret_key"] == ""
+
+
+def test_put_enabled_false_forbidden_for_non_admin(lifespan_patches) -> None:
+    client = _client_for(_user("recruitment.manage", "interview.execute"))
+    assert (
+        client.put(
+            f"{BASE}/dify",
+            json={"enabled": {"api_key": False}},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            f"{BASE}/minio",
+            json={"enabled": {"secret_key": False}},
+        ).status_code
+        == 403
+    )
+
+
+def test_put_enabled_false_keeps_ciphertext_and_env_fallback_after_reload(
+    lifespan_patches, fernet_key: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty secret keeps ciphertext; enabled=false; reload overlay → env baseline."""
+    from app.core.config import get_settings
+    from app.models.integration_secret import IntegrationSecret
+    from app.services.crypto import encrypt_secret
+    from app.services.integration_config import (
+        effective_dify_api_base_url,
+        effective_dify_api_key,
+        effective_minio_bucket,
+        effective_minio_secret_key,
+        materialize_overlay_from_rows,
+        set_process_overlay,
+    )
+    from app.services import integrations as svc
+
+    monkeypatch.setenv("DIFY_API_BASE_URL", "https://env-baseline.example/v1")
+    monkeypatch.setenv("DIFY_API_KEY", "env-baseline-dify-key")
+    monkeypatch.setenv("MINIO_BUCKET", "env-baseline-bucket")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "env-baseline-minio-secret")
+    get_settings.cache_clear()
+
+    store: dict = {}
+    original_dify = encrypt_secret("db-overlay-dify-key")
+    original_minio = encrypt_secret("db-overlay-minio-secret")
+    assert original_dify and original_minio
+
+    def _row(provider: str, config_key: str, cipher: str, *, secret: bool) -> IntegrationSecret:
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        return IntegrationSecret(
+            id=uuid4(),
+            provider=provider,
+            config_key=config_key,
+            value_encrypted=cipher,
+            is_secret=secret,
+            enabled=True,
+            updated_by=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+    store[("dify", "api_key")] = _row("dify", "api_key", original_dify, secret=True)
+    store[("dify", "api_base_url")] = _row(
+        "dify",
+        "api_base_url",
+        encrypt_secret("https://db-overlay.example/v1") or "",
+        secret=False,
+    )
+    store[("minio", "secret_key")] = _row(
+        "minio", "secret_key", original_minio, secret=True
+    )
+    store[("minio", "bucket")] = _row(
+        "minio",
+        "bucket",
+        encrypt_secret("db-overlay-bucket") or "",
+        secret=False,
+    )
+
+    async def list_secrets(session, *, provider=None):
+        rows = list(store.values())
+        if provider is not None:
+            rows = [r for r in rows if r.provider == provider]
+        return rows
+
+    async def get_secret(session, *, provider, config_key):
+        return store.get((provider, config_key))
+
+    async def upsert(
+        session,
+        *,
+        provider,
+        config_key,
+        value_encrypted,
+        is_secret,
+        enabled=True,
+        updated_by=None,
+    ):
+        existing = store.get((provider, config_key))
+        if existing is None:
+            row = _row(provider, config_key, value_encrypted, secret=is_secret)
+            row.enabled = enabled
+            row.updated_by = updated_by
+            store[(provider, config_key)] = row
+            return row
+        existing.value_encrypted = value_encrypted
+        existing.is_secret = is_secret
+        existing.enabled = enabled
+        existing.updated_by = updated_by
+        return existing
+
+    async def capture_audit(session, **kwargs):
+        return None
+
+    monkeypatch.setattr(svc.secrets_repo, "list_integration_secrets", list_secrets)
+    monkeypatch.setattr(svc.secrets_repo, "get_integration_secret", get_secret)
+    monkeypatch.setattr(svc.secrets_repo, "upsert_integration_secret", upsert)
+    monkeypatch.setattr(svc, "record_audit", capture_audit)
+    import app.services.integration_config as cfg
+
+    monkeypatch.setattr(cfg.secrets_repo, "list_integration_secrets", list_secrets)
+
+    session = AsyncMock()
+    session.commit = AsyncMock()
+
+    async def override_db():
+        yield session
+
+    admin = _user(PERM)
+    app.dependency_overrides[get_current_user] = lambda: admin  # type: ignore[assignment]
+
+    async def override_user() -> User:
+        return admin
+
+    app.dependency_overrides[get_current_user] = override_user
+    app.dependency_overrides[get_db_session] = override_db
+    client = TestClient(app)
+
+    put_d = client.put(
+        f"{BASE}/dify",
+        json={
+            "enabled": {"api_key": False, "api_base_url": False},
+            "api_key": "",
+        },
+    )
+    put_m = client.put(
+        f"{BASE}/minio",
+        json={
+            "enabled": {"secret_key": False, "bucket": False},
+            "secret_key": "",
+        },
+    )
+    assert put_d.status_code == 200, put_d.text
+    assert put_m.status_code == 200, put_m.text
+    body_d = put_d.json()
+    body_m = put_m.json()
+    assert body_d["dify"]["api_key"]["enabled"] is False
+    assert body_d["dify"]["api_key"]["status"] == "disabled"
+    assert body_d["dify"]["api_key"]["configured"] is True  # env baseline still configured
+    assert body_d["dify"]["api_base_url"]["enabled"] is False
+    assert body_d["dify"]["api_base_url"]["status"] == "disabled"
+    # non-secret shows env baseline value after disable (not DB overlay URL)
+    assert body_d["dify"]["api_base_url"]["value"] == "https://env-baseline.example/v1"
+    assert body_m["minio"]["secret_key"]["enabled"] is False
+    assert body_m["minio"]["secret_key"]["status"] == "disabled"
+    assert body_m["minio"]["bucket"]["value"] == "env-baseline-bucket"
+    assert "value" not in body_d["dify"]["api_key"]
+    assert "value" not in body_m["minio"]["secret_key"]
+    _assert_no_secrets(body_d)
+    _assert_no_secrets(body_m)
+    # disabled fields must not echo overlay plaintext
+    assert "db-overlay" not in body_d["dify"]["api_base_url"]["value"]
+    assert "db-overlay" not in body_m["minio"]["bucket"]["value"]
+    assert "db-overlay-dify-key" not in json.dumps(body_d)
+    assert "db-overlay-minio-secret" not in json.dumps(body_m)
+
+    # empty secret must not clear previous ciphertext
+    assert store[("dify", "api_key")].value_encrypted == original_dify
+    assert store[("minio", "secret_key")].value_encrypted == original_minio
+    assert store[("dify", "api_key")].enabled is False
+    assert store[("minio", "secret_key")].enabled is False
+
+    # simulate process restart: reload overlay from DB rows into process snapshot
+    set_process_overlay(materialize_overlay_from_rows(list(store.values())))
+    assert effective_dify_api_key() == "env-baseline-dify-key"
+    assert effective_dify_api_base_url() == "https://env-baseline.example/v1"
+    assert effective_minio_secret_key() == "env-baseline-minio-secret"
+    assert effective_minio_bucket() == "env-baseline-bucket"

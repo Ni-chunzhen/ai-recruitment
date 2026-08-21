@@ -53,6 +53,8 @@ class DifyUpdateIn(BaseModel):
         default=None, max_length=128
     )
     ai_provider: Literal["mock", "dify"] | None = None
+    # key -> enabled; false disables DB overlay for that config_key (fall back to env)
+    enabled: dict[str, bool] | None = None
 
 
 class MinioUpdateIn(BaseModel):
@@ -64,6 +66,8 @@ class MinioUpdateIn(BaseModel):
     bucket: str | None = Field(default=None, max_length=128)
     secure: str | bool | None = None
     presign_seconds: str | int | None = None
+    # key -> enabled; false disables DB overlay for that config_key (fall back to env)
+    enabled: dict[str, bool] | None = None
 
 
 class ConnectivityTestOut(BaseModel):
